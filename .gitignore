@@ -43,6 +43,7 @@ dist/
 build/
 *.egg-info/
 
-# --- Supabase local (if ever used) ---
-supabase/.branches/
-supabase/.temp/
+# --- Local data (SQLite + uploaded documents) ---
+data/
+!data/.gitkeep
+!data/kiyos.db.seed

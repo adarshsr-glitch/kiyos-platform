@@ -1,9 +1,10 @@
-.PHONY: help install dev dev-web dev-api test test-engine test-knowledge test-api lint migrate clean
+.PHONY: help install dev dev-web dev-api test test-engine test-knowledge test-api lint seed reset-db clean
 
 help:
 	@echo "Kiyos platform — localhost dev"
 	@echo ""
 	@echo "  make install        install web + api dependencies"
+	@echo "  make seed           create ./data/kiyos.db with a demo case"
 	@echo "  make dev            run web (:3000) and api (:8000) together"
 	@echo "  make dev-web        run only Next.js"
 	@echo "  make dev-api        run only FastAPI"
@@ -12,7 +13,7 @@ help:
 	@echo "  make test-knowledge validate every YAML rule's test_cases"
 	@echo "  make test-api       run api contract tests"
 	@echo "  make lint           ruff + eslint"
-	@echo "  make migrate        run supabase migrations against SUPABASE_DB_URL"
+	@echo "  make reset-db       delete ./data/kiyos.db (will be recreated on next start/seed)"
 	@echo "  make clean          remove build artifacts"
 
 install:
@@ -45,8 +46,12 @@ lint:
 	cd api && poetry run ruff check .
 	cd web && pnpm lint
 
-migrate:
-	cd infra && ./apply_migrations.sh
+seed:
+	mkdir -p data/documents
+	cd api && poetry run python -m infra.seed
+
+reset-db:
+	rm -f data/kiyos.db
 
 clean:
 	rm -rf web/.next web/node_modules api/.pytest_cache api/__pycache__

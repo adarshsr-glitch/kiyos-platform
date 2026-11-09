@@ -218,9 +218,9 @@ A user asking "how much tax do I owe?" triggers the engine, not Claude. Claude o
 
 - **Next.js 14 (App Router) + TypeScript + Tailwind + shadcn/ui** — fastest path to a polished dashboard in solo mode; shadcn gives you production-looking components without design time.
 - **Python 3.12 + FastAPI + Pydantic** — tax logic in Python is right because the ecosystem (pandas, finance libraries, rule-authoring) is there, and Pydantic models double as API contracts and engine input/output types.
-- **PostgreSQL via Supabase** — one dependency gives you auth, Postgres, storage (for documents) and row-level-security policies. Replaceable later; perfect for prototype.
+- **SQLite + local filesystem** — one file (`./data/kiyos.db`) via SQLAlchemy + `aiosqlite`. Documents saved under `./data/documents/<case_id>/<doc_id>.<ext>`. No auth, no RLS, no cloud. The schema is identical to what Postgres would need — swap the connection string and add RLS when a KV pod needs multi-user later. For a solo prototype, this removes every cloud dependency.
 - **Claude API** — `claude-opus-5-5` for reasoning and document extraction, `claude-haiku-5-5` for structured extraction at scale.
-- **Localhost only for the prototype.** `pnpm dev` for web on :3000, `uvicorn` for api on :8000. No Vercel, no Fly, no Railway until the Kiyos demo forces the decision. Supabase stays cloud (free tier) because it saves days of setup; swap to local Supabase CLI later if the prototype needs to go fully offline.
+- **Localhost only for the prototype.** `pnpm dev` for web on :3000, `uvicorn` for api on :8000. No Vercel, no Fly, no Railway until the Kiyos demo forces the decision. Zero cloud dependencies — SQLite on disk, documents on filesystem, Anthropic API the only external call.
 - **pnpm + Poetry** — one package manager per language, no workspace monorepo yet; keep repo flat.
 - **GitHub, private repo** — trunk-based, feature branches, tag every demo build (`v0.1-demo-01`, `v0.1-demo-02`) so you can roll a demo state back in one command.
 
@@ -253,7 +253,8 @@ kiyos-platform/
 │   └── ARCHITECTURE.md   # four-layer explainer for future readers
 ├── .cursor/
 │   └── rules/            # scoped rule files Cursor auto-loads
-├── infra/                # supabase migrations, deployment config
+├── infra/                # schema.py, seed data
+├── data/                 # sqlite db + uploaded documents (gitignored)
 ├── .env.example
 ├── README.md
 └── Makefile              # top-level: dev, test, lint, migrate
@@ -317,17 +318,18 @@ Every AI call is written to an `AiCall` table: timestamp, service, model, prompt
 
 ## Data model (prototype — minimal)
 
-- `user` — Supabase auth row.
-- `case` — one open case per user for the prototype.
-- `document` — uploaded file, status (uploaded / extracting / extracted / failed), extracted JSON.
+SQLAlchemy models in `infra/schema.py`, applied at app startup via `Base.metadata.create_all()`. SQLite on disk, one file.
+
+- `case` — a seeded demo case. No user table yet; the prototype runs single-tenant. Add `user_id` later when multi-user lands.
+- `document` — uploaded file reference (filesystem path), status (uploaded / extracting / extracted / failed), extracted JSON.
 - `fact` — a normalised datum (e.g. "US salary 2026 = $240K") tied to a case and optionally a source document. The engine reads facts, not documents.
 - `assessment` — engine output: computed amounts, derivation trail, status.
 - `explanation` — AI-generated explanation of an assessment, linked to it.
-- `conversation` + `message` — chat history, same model whether the message came from dashboard or WhatsApp later.
-- `ai_call` — audit log.
+- `conversation` + `message` — chat history, same model whether the message came from the dashboard or WhatsApp later.
+- `ai_call` — audit log for every Claude call.
 - `rule_version` — hash of the knowledge layer at the time of an assessment, so re-running old assessments stays reproducible.
 
-Supabase row-level-security from day one: a user sees only their own case. Case captain role gets elevated read with every access logged.
+No auth, no RLS. When a KV pod adds multi-user, the migration is: swap the connection string to Postgres, add a `user` table, add `user_id` foreign keys, add RLS. Isolated to the data layer; the engine and AI don't move.
 
 ## How WhatsApp fits into the dashboard view
 
@@ -342,12 +344,12 @@ For the prototype you skip real WhatsApp entirely. The in-dashboard chat is the 
 
 ## Security and privacy (prototype grade, not production)
 
-- Supabase handles auth, encryption at rest, RLS.
-- Documents in Supabase Storage behind signed URLs with short TTL.
+- No auth, no user accounts. The prototype runs single-tenant on your laptop.
+- SQLite file (`./data/kiyos.db`) and documents (`./data/documents/`) stay on local disk. `./data/` is gitignored.
 - `.env` never checked in; `.env.example` is.
 - AI calls go through a single wrapper function that strips named entities (name, SSN, Aadhaar, PAN) before sending prompts — reversibly, so explanations can reinject them client-side. This is a prototype-grade protection; it will be revisited in the production build.
 - Private GitHub repo, two-factor on every account.
-- No production customer data ever touches the prototype. Seed with synthetic cases.
+- No production customer data ever touches the prototype. Seed with synthetic cases only.
 
 ## GitHub + rollback strategy
 
@@ -356,14 +358,14 @@ For the prototype you skip real WhatsApp entirely. The in-dashboard chat is the 
 - PRs reviewed by yourself (solo mode) but written as if someone else will read them — this is practice for the pod.
 - Tag every working demo state: `v0.1-demo-01`, `v0.1-demo-02`, `v0.2-cap-gains-ok`. Push tags to origin.
 - Rollback = `git checkout <tag>` + `make dev` restarts cleanly. Local only for now; deploy rollback is a later concern.
-- Supabase migrations in `infra/migrations/`, numbered forward-only. Migration revert scripts if destructive.
-- Weekly backup of Supabase during active dev.
+- Schema lives in `infra/schema.py` as SQLAlchemy models, applied via `Base.metadata.create_all()` at app startup. Forward-only for the prototype — if the schema changes, nuke `./data/kiyos.db` and re-seed.
+- Keep a `./data/kiyos.db.seed` committed with a known-good demo state. Restoring a demo = `cp data/kiyos.db.seed data/kiyos.db`.
 
 ## Build phases — 8 week prototype arc
 
 | Week | Milestone | Done means |
 |---|---|---|
-| 1 | Repo scaffold | Next.js hello-world + FastAPI hello-world + Supabase project + auth round-trip + first `v0.1-scaffold` tag |
+| 1 | Repo scaffold | Next.js hello-world + FastAPI hello-world + SQLite data layer + seeded demo case + first `v0.1-scaffold` tag |
 | 2 | Knowledge layer v0 | 10–15 rules authored in YAML (residency, Art 4/13/15/20/23, capital gains, dividends, 401(k) distribution), all with test cases passing |
 | 3 | Engine v0 | Residency determination + one capital-gains scenario computes end-to-end against the knowledge layer, derivation trail emitted |
 | 4 | Explanation + conversation v0 | Claude generates plain-English explanations citing rule IDs; in-dashboard chat holds a 10-turn session that calls the engine |
@@ -500,13 +502,13 @@ Open Cursor Composer in agent mode, with `docs/PLAN.md` and `.cursor/rules/archi
 
 Review the diff. Tag `v0.0-scaffold`. Push.
 
-### Step 5 — Second Cursor session: wire Supabase + auth
+### Step 5 — Second Cursor session: wire the SQLite data layer
 
 Separate session, fresh context. Prompt:
 
-> "Set up Supabase integration per `docs/PLAN.md`. Add Supabase JS client to `web/` with SSR helpers and a magic-link login flow at `/login`. Add Supabase Python client to `api/` using the service role key. Write the initial migration in `infra/migrations/0001_init.sql` with the tables listed in `docs/PLAN.md` section 'Data model'. Add RLS policies: user sees only their own case/document/fact/assessment. Don't seed any data yet."
+> "Set up the SQLite data layer per `docs/PLAN.md` section 'Data model'. Add `sqlalchemy` and `aiosqlite` to `api/` via Poetry. Create `infra/schema.py` with SQLAlchemy 2.0 declarative models for every table: case, document, fact, assessment, explanation, conversation, message, ai_call, rule_version. No user table yet. Create `api/db.py` exposing an async session factory that reads `DATABASE_URL` from env. On FastAPI startup, call `Base.metadata.create_all()` so the schema is applied to a fresh db. Add a `/cases` GET endpoint that lists cases, and a `/cases/{id}` GET that returns one case with its facts and assessments. Write `infra/seed.py` that creates one demo case for Arjun Rao (returning NRI from US, moving July 2026) with a handful of facts. Ensure `./data/` directory exists and is gitignored. Do not add auth. Do not add Supabase."
 
-Tag `v0.0-supabase`.
+Tag `v0.0-sqlite`.
 
 ### Step 6 — Everything after is incremental
 

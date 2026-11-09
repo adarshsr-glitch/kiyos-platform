@@ -37,6 +37,10 @@ Claude API, scoped to three jobs:
 
 Every AI call is logged to the `ai_call` table. The AI never computes a tax number, never cites a rule that isn't in `knowledge/`, and never cites a source that isn't in `sources/`.
 
+## Where state lives (prototype)
+
+SQLite file at `./data/kiyos.db`, documents on disk at `./data/documents/`. No auth, no multi-tenant. One seeded demo case runs the whole prototype. When a KV pod productises this, the data layer swaps to Postgres + auth + RLS — the engine, knowledge, sources, and AI services don't move.
+
 ## Why this shape
 
 A customer asking "how much tax do I owe?" triggers the engine. Claude only ever says what the engine returned, cites the rules the engine applied, and those rules cite the sources. If a reviewer disagrees with the answer, they can trace it through the derivation trail to the exact rule and the exact statute passage — and either fix the rule or dispute it on the merits.

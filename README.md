@@ -29,17 +29,20 @@ sources → knowledge → engine → ai
 
 ## Running locally
 
-**Prerequisites:** Node 20+, pnpm, Python 3.12, Poetry, a Supabase project (free tier is fine).
+**Prerequisites:** Node 20+, pnpm, Python 3.12, Poetry. That's it — no cloud dependencies.
 
 ```bash
 # one-time
-cp .env.example .env            # fill in Supabase + Claude keys
+cp .env.example .env            # add your Anthropic API key
 make install                    # pnpm install in web/, poetry install in api/
+make seed                       # create ./data/kiyos.db with one demo case
 
 # dev
 make dev                        # runs web on :3000 and api on :8000
 make test                       # knowledge + engine + api tests
 ```
+
+Data lives in `./data/` (gitignored). Nuke the file and `make seed` again to reset.
 
 ## How to work in this repo
 

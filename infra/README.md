@@ -1,25 +1,29 @@
-# infra — Supabase migrations and deployment config
+# infra — schema and seed
 
-For the prototype, infra is small:
+For the prototype, infra is minimal:
 
-- `migrations/` — numbered forward-only SQL migrations applied to the Supabase Postgres.
-- `apply_migrations.sh` — thin wrapper that applies pending migrations against `$SUPABASE_DB_URL`.
+- `schema.py` — SQLAlchemy 2.0 declarative models for every table in `docs/PLAN.md` → "Data model". Applied via `Base.metadata.create_all()` at FastAPI startup.
+- `seed.py` — creates one demo case (Arjun Rao, returning NRI) plus a few facts. Run with `make seed`.
 
-No deployment config yet. Localhost only until the Kiyos demo forces the decision.
+That's it. No migrations tool, no cloud dependencies, no auth.
 
-## Migration file naming
+## When the schema changes
 
-```
-infra/migrations/0001_init.sql
-infra/migrations/0002_add_fact_source_link.sql
-```
+Prototype rule: forward-only, destructive is fine.
 
-Numbers are forward-only. If a migration is destructive, write a paired `0002_add_fact_source_link.down.sql` so a rollback is possible, but the forward file is still what gets committed and applied.
+1. Edit `schema.py`.
+2. `make reset-db` deletes the SQLite file.
+3. `make seed` creates a fresh one.
 
-The initial migration `0001_init.sql` creates:
+Data lives in `./data/` (gitignored). To preserve a known-good demo state between resets, commit a `data/kiyos.db.seed` and restore with `cp data/kiyos.db.seed data/kiyos.db`.
 
-- Core tables listed in `docs/PLAN.md` → "Data model"
-- RLS policies: a user sees only their own case/document/fact/assessment
-- Elevated role for case captains, with every elevated read logged
+## Later — when this becomes multi-user
 
-See `docs/PLAN.md` for the full table list.
+The migration path is isolated to this directory:
+
+1. Swap `DATABASE_URL` to a Postgres URL.
+2. Add a `user` table + `user_id` foreign keys.
+3. Add RLS policies.
+4. Introduce a migrations tool (Alembic) because destructive resets stop being OK.
+
+The engine, knowledge, sources, and AI services don't move. That's the whole point of the four-layer separation.
