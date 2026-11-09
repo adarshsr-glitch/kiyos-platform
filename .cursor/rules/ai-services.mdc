@@ -1,0 +1,70 @@
+---
+description: Rules for AI services — extract, explain, converse
+globs: ["api/services/extract.py", "api/services/explain.py", "api/services/converse.py", "api/services/_ai.py"]
+---
+
+# AI services — scoped to three jobs, logged on every call
+
+The AI layer does three things and three things only:
+
+1. **Extract** — document (PDF or image) → structured JSON that validates against a Pydantic schema.
+2. **Explain** — engine result + derivation trail → plain English that cites rule IDs.
+3. **Converse** — a tool-call loop that answers user questions by calling the engine for numbers and the knowledge layer for rules.
+
+## Hard rules
+
+1. **No computation.** If a tax number appears in an AI response, it came from a prior engine call. Never asked Claude to "work out" an amount.
+2. **Every rule citation uses the stable rule ID.** Not a paraphrase. The user clicks through to the rule's markdown.
+3. **Every source citation points at a real file in `sources/`.** Not a URL from training data, not a plausible-sounding citation.
+4. **Every AI call goes through the `AiCall` wrapper** in `api/services/_ai.py`. That wrapper logs timestamp, service, model, prompt tokens, completion tokens, latency, request hash, and response to the `ai_call` table. No direct `anthropic` client use outside that wrapper.
+5. **PII scrubbing before the prompt.** Names, SSN, Aadhaar, PAN are stripped before leaving the server. The wrapper handles this and provides a reversible map for reinjection client-side.
+
+## Patterns
+
+### Extract
+
+```python
+# api/services/extract.py
+from api.services._ai import ai_call
+from api.models.documents import W2Extract
+
+async def extract_w2(pdf_bytes: bytes) -> W2Extract:
+    response = await ai_call(
+        service="extract",
+        model="claude-haiku-5-5",
+        input=[...vision message with pdf_bytes...],
+        response_schema=W2Extract,
+    )
+    return W2Extract.model_validate_json(response.content)
+```
+
+### Explain
+
+```python
+# api/services/explain.py
+async def explain_assessment(assessment: Assessment) -> str:
+    prompt = render_explain_prompt(
+        result=assessment.result,
+        derivation=assessment.derivation,  # rule IDs are required citations
+    )
+    response = await ai_call(service="explain", model="claude-opus-5-5", input=prompt)
+    assert_cites_rule_ids(response, assessment.derivation.rule_ids)  # hard assertion
+    return response.content
+```
+
+### Converse
+
+```python
+# api/services/converse.py — tool-call loop
+TOOLS = [
+    engine_call_tool,    # calls engine functions, returns results + derivation
+    lookup_rule_tool,    # reads knowledge/ YAML by ID
+    lookup_source_tool,  # reads sources/ markdown by ID
+    ask_user_tool,       # asks the user a clarifying question
+]
+# No compute_tax_tool. No calculator. No math tool.
+```
+
+## When Claude goes off the rails
+
+If Claude generates a number without an engine call, or cites a rule or source that doesn't exist, the prompt has leaked. Tighten the prompt, add a hard assertion, and if it keeps happening add a post-response validator that rejects the response and retries.

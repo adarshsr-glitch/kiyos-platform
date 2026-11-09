@@ -1,0 +1,60 @@
+---
+description: YAML rule schema and authoring rules for the knowledge layer
+globs: ["knowledge/**/*.yaml", "knowledge/**/*.yml", "knowledge/**/*.md"]
+---
+
+# Knowledge layer — rule authoring
+
+Every rule lives under `knowledge/<jurisdiction>/<tax_year>/<topic>/` as one YAML file. An optional markdown explainer with the same basename may sit alongside it for the dashboard to surface.
+
+## Rule YAML schema
+
+```yaml
+id: <STABLE-RULE-ID>              # e.g. IN-RES-RNOR-9OF10 or US-NRA-SPT
+jurisdiction: IN | US
+tax_year: "<year or range>"       # e.g. "2026-27" for India, "2026" for US
+
+sources:                          # one or more — the primary statute(s) this rule derives from
+  - id: <SOURCE-ID>               # must match an entry in sources/<j>/<dir>/_manifest.yaml
+    section: "<section/article>"  # e.g. "6(6)(a)" or "Art 4(2)"
+    passage: "<verbatim excerpt>" # a short quote from the extracted markdown
+
+summary: "<one-sentence what this rule says>"
+
+inputs:                           # the structured inputs the engine passes in
+  - name: <input_name>
+    type: <scalar | array[T] | enum[A,B,C]>
+    length: <optional for arrays>
+
+logic:                            # how the engine evaluates the rule
+  kind: <threshold_count | day_count | formula | ...>
+  <kind-specific fields>
+
+status: active | deprecated | debated
+
+test_cases:                       # REQUIRED — at least two (one passing, one failing)
+  - name: "<describes the case>"
+    inputs:
+      <input_name>: <value>
+    expected: <value>
+```
+
+## Hard rules
+
+1. **Do not invent a rule.** Rules come from a human reading the statute in `sources/`. If you (the AI) are being asked to write a rule from scratch, stop and ask for the source passage.
+2. **Every `sources[].id` must match a real manifest entry.** Don't make up source IDs. If the source isn't downloaded yet, flag it — do not proceed.
+3. **`passage` must be a verbatim excerpt** from the extracted markdown in `sources/`. Not a paraphrase. If you can't find the passage, flag it.
+4. **Every rule must have at least two `test_cases`** — one that returns true/expected, one that returns false/not-expected. More is better.
+5. **Rule IDs are stable forever.** Don't rename. If a rule is replaced, add a new one with a new ID and mark the old one `status: deprecated`.
+6. **Changes to rules are PRs with reasoning in the commit message.** Say what changed and why; link to the source passage that drove the change.
+
+## Scaffolding vs authoring
+
+You may scaffold:
+
+- The YAML loader in `engine/`
+- Pydantic models mirroring this schema
+- The `pytest` harness that picks up `test_cases` and parametrizes tests
+- Lint checks that reject rules missing any required field
+
+You may not scaffold rule content itself.

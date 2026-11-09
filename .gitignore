@@ -1,0 +1,48 @@
+# --- Secrets ---
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# --- Node / Next.js ---
+node_modules/
+.next/
+out/
+.pnpm-store/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.poetry/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# --- Build artefacts ---
+dist/
+build/
+*.egg-info/
+
+# --- Supabase local (if ever used) ---
+supabase/.branches/
+supabase/.temp/

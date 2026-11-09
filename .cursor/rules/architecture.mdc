@@ -1,0 +1,34 @@
+---
+description: Four-layer separation — the non-negotiable architecture of this codebase
+alwaysApply: true
+---
+
+# Kiyos architecture — read this before touching any file
+
+This codebase has four layers. Each layer may only call the layer immediately below it. No layer may skip layers.
+
+```
+sources (PDFs + .md)  →  knowledge (YAML rules)  →  engine (Python)  →  ai (Claude)
+```
+
+The full plan is in `docs/PLAN.md`. The architecture explainer is in `docs/ARCHITECTURE.md`. Read both if you need more context than this rule gives you.
+
+## Hard prohibitions — if you violate these, stop and surface
+
+1. **No `anthropic`, `openai`, `httpx`, `requests` imports anywhere under `engine/` or `knowledge/`.** The engine is deterministic. If you need an AI call, it belongs in `api/services/`.
+2. **No tax computation in `api/services/*`.** Numbers come from the engine. AI services only extract, explain, and converse.
+3. **No rule content authored by an LLM.** Rule YAML under `knowledge/` is human-authored. You may scaffold the schema, the loader, the tests — never the content of a rule.
+4. **No source citation that points at a file that doesn't exist in `sources/`.** Sources are real files on disk with a stable ID in a `_manifest.yaml`.
+5. **No AI response that includes a tax number that didn't come from an engine call.** If you're about to produce a number in an AI service, you must have called the engine first.
+
+## What every engine function returns
+
+Every engine function returns a result plus a `DerivationTrail` — the ordered list of `(rule_id, inputs_used, output)` triples applied to produce the result. If you add an engine function without a derivation trail, the architecture leaks.
+
+## What every AI response that cites a rule looks like
+
+Cite the rule by its stable ID (e.g. `IN-RES-RNOR-9OF10`), not by paraphrasing. The user can click through to the rule's markdown file and from there to the source passage.
+
+## Why
+
+Trust is impossible if an LLM computes tax. Every architectural decision in this repo flows from this. If you find yourself proposing something that blurs the layers for convenience, stop and say so — the whole product falls over if we lose this.

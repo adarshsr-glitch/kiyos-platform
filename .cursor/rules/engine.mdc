@@ -1,0 +1,41 @@
+---
+description: Rules for the deterministic tax engine
+globs: ["engine/**/*.py"]
+---
+
+# Engine — deterministic only
+
+The engine is the only part of this codebase allowed to compute a tax number. It does so by reading YAML rules from `knowledge/` and applying them to structured inputs.
+
+## Hard rules
+
+1. **No network calls.** No `httpx`, `requests`, `anthropic`, `openai`, `urllib`, `socket` imports. Linted.
+2. **No file I/O for anything other than YAML rules in `knowledge/`.** If you need other data, it comes in as a function argument.
+3. **No randomness, no wall-clock reads inside pure functions.** If a date is needed, pass it in. Determinism matters because test reproducibility matters.
+4. **Pydantic models in, Pydantic models out.** Every public engine function has a typed input model and a typed output model.
+5. **Every result includes a `DerivationTrail`.** The trail is an ordered list of `(rule_id, inputs_used, output)` triples naming every rule applied. The engine's job is as much to explain what it did as to compute the answer.
+6. **No rule logic inlined in Python.** Rules live in YAML. The engine reads YAML and interprets its `logic` block. If you find yourself writing "if days > 182" in Python, stop — that threshold belongs in a rule YAML.
+
+## Public surface pattern
+
+```python
+# engine/residency.py
+from engine.types import ResidencyInputs, ResidencyResult, DerivationTrail
+from engine.rules import load_rule
+
+def determine_india_residency(inputs: ResidencyInputs, as_of: date) -> ResidencyResult:
+    trail = DerivationTrail()
+
+    rule = load_rule("IN-RES-RESIDENT-182")
+    is_resident_182 = rule.evaluate({"days_in_py": inputs.days_in_py})
+    trail.add(rule.id, {"days_in_py": inputs.days_in_py}, is_resident_182)
+
+    # ...more rules...
+
+    return ResidencyResult(status=..., derivation=trail)
+```
+
+## Tests
+
+- Unit tests for every public function in `engine/tests/`.
+- A parametrised test harness that loads every rule YAML, runs its `test_cases` through the rule's evaluator, and asserts each expectation. If a rule has no test cases, that's a test failure.

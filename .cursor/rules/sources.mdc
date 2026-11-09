@@ -1,0 +1,75 @@
+---
+description: Rules for the primary sources layer
+globs: ["sources/**"]
+---
+
+# Sources layer — primary statutes
+
+`sources/` holds the raw, public-domain tax law material this product reasons from. Every rule in `knowledge/` cites back to a specific file here.
+
+## Layout
+
+```
+sources/
+├── india/
+│   ├── ita-1961/
+│   │   ├── _manifest.yaml
+│   │   ├── s6-residence.pdf
+│   │   ├── s6-residence.md
+│   │   └── ...
+│   ├── dtaa-india-us/
+│   ├── cbdt-circulars/
+│   └── black-money-act/
+└── us/
+    ├── irc/
+    ├── irs-publications/
+    └── treaty/
+```
+
+## `_manifest.yaml` format
+
+One manifest per source directory, declaring the stable IDs used elsewhere in the repo.
+
+```yaml
+# sources/india/ita-1961/_manifest.yaml
+documents:
+  - id: IN-ITA-S6
+    title: "Income Tax Act 1961 — Section 6, Residence in India"
+    authority: "Government of India, Ministry of Finance"
+    url_when_fetched: "https://incometaxindia.gov.in/..."
+    as_of_date: "2026-04-01"
+    files:
+      pdf: "s6-residence.pdf"
+      markdown: "s6-residence.md"
+
+  - id: IN-ITA-S90
+    title: "Income Tax Act 1961 — Section 90, Agreement with foreign countries"
+    ...
+```
+
+## Naming convention
+
+Stable IDs follow `<COUNTRY>-<CORPUS>-<LOCATOR>`:
+
+- `IN-ITA-S6` — India, Income Tax Act, Section 6
+- `IN-DTAA-ART-4` — India (treaty), DTAA with US, Article 4
+- `IN-BMA-S43` — India, Black Money Act, Section 43
+- `IN-CBDT-24-2022` — India, CBDT Circular 24/2022
+- `US-IRC-7701B` — US, IRC, Section 7701(b)
+- `US-PUB-519` — US, IRS Publication 519
+- `US-TREATY-ART-13` — US (treaty), Article 13
+
+Once assigned, a source ID never changes. If a document is superseded, add a new ID and mark the old one.
+
+## Adding a new source
+
+1. Download the PDF.
+2. Run `pdftotext -layout` to extract markdown. Commit both.
+3. Add the entry to `_manifest.yaml` with ID, title, authority, URL, as-of date.
+4. Reference the new ID in any rule that needs it.
+
+## Hard rules
+
+1. **Do not fabricate a source.** If a rule you're authoring needs a statute that isn't downloaded, stop and flag it.
+2. **Only public-domain government works.** Statutes, treaties, official publications. No commercial commentary.
+3. **Do not edit the extracted markdown to clean up the text.** Keep it verbatim so citations remain verifiable.
