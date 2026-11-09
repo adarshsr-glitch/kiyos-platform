@@ -1,0 +1,26 @@
+[project]
+name = "kiyos-api"
+version = "0.1.0"
+description = "Kiyos cross-border tax API"
+authors = [
+    {name = "Kiyos",email = "dev@kiyos.com"}
+]
+requires-python = ">=3.12,<4.0"
+dependencies = [
+    "fastapi (>=0.162.2,<0.163.0)",
+    "uvicorn (>=0.54.0,<0.55.0)",
+    "python-dotenv (>=1.2.4,<2.0.0)",
+    "pydantic (>=2.14.3,<3.0.0)",
+    "kiyos-engine @ file:///Users/adarsh/Downloads/Kiyos/kiyos-platform/engine",
+]
+
+
+[tool.poetry]
+package-mode = false
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.dependencies]
+kiyos-engine = {develop = true}
