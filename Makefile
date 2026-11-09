@@ -48,7 +48,7 @@ lint:
 
 seed:
 	mkdir -p data/documents
-	cd api && poetry run python -m infra.seed
+	cd api && PYTHONPATH=.. poetry run python -c "import asyncio; from infra.seed import seed; asyncio.run(seed())"
 
 reset-db:
 	rm -f data/kiyos.db
