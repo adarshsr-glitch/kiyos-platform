@@ -31,6 +31,18 @@ const REQUIRED_DOCS = [
   { type: "brokerage_statement", label: "Brokerage statements", free: false },
 ];
 
+/** Required documents (for the customer's plan) not yet received. */
+export function missingRequiredDocs(documents: DocumentItem[], premium: boolean) {
+  return REQUIRED_DOCS.filter((r) => premium || r.free).filter(
+    (r) =>
+      !documents.some(
+        (d) =>
+          d.doc_type?.toLowerCase() === r.type.toLowerCase() ||
+          d.filename.toLowerCase().includes(r.type.toLowerCase().replace("_", ""))
+      )
+  );
+}
+
 export function DocumentChecklist({
   caseId,
   documents,

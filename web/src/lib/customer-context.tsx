@@ -8,6 +8,10 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
+import { setCasePlan } from "./api";
+
+/** The prototype portal runs as a single demo case. */
+export const PORTAL_CASE_ID = 1;
 
 export type CustomerTier = "onboarding" | "free" | "premium";
 
@@ -121,6 +125,14 @@ export function CustomerProvider({ children }: { children: ReactNode }) {
     localStorage.setItem("kiyos-journey-stage", "dashboard");
     localStorage.setItem("kiyos-just-upgraded", "true");
   }, []);
+
+  // Keep the server's entitlement in step with the demo tier, so chat limits
+  // are enforced by the API rather than only hidden in the UI.
+  useEffect(() => {
+    if (hydrated && tier !== "onboarding") {
+      setCasePlan(PORTAL_CASE_ID, tier).catch(() => {});
+    }
+  }, [hydrated, tier]);
 
   const onboardingComplete = tier !== "onboarding";
 

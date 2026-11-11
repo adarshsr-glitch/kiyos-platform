@@ -26,6 +26,7 @@ export function ViewToggle({ className }: { className?: string }) {
           <button
             key={seg.mode}
             onClick={() => setMode(seg.mode)}
+            aria-label={`${seg.label} view`}
             className={cn(
               "flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
               active
@@ -34,7 +35,7 @@ export function ViewToggle({ className }: { className?: string }) {
             )}
           >
             <Icon className="h-3.5 w-3.5" />
-            {seg.label}
+            <span className="hidden sm:inline">{seg.label}</span>
           </button>
         );
       })}

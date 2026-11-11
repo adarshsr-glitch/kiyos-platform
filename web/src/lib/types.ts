@@ -156,6 +156,7 @@ export interface CaseDetail {
   scenarios: Scenario[];
   conversation_id: number | null;
   profile_confirmed_at: string | null;
+  plan: "free" | "premium";
 }
 
 export interface Message {
@@ -167,7 +168,18 @@ export interface Message {
   confidence?: number | null;
   routed?: boolean;
   cited_rules?: string[] | null;
+  /** Free-plan classification of a customer question */
+  category?: "generic" | "generic_unanswered" | "generic_over_limit" | "personal" | null;
+  /** Call-to-action rendered under an agent message */
+  action?: { type: "plans" | "upload" | "verify" | string; label: string; href: string } | null;
   created_at: string;
+}
+
+export interface FreeUsage {
+  generic_used: number;
+  generic_limit: number;
+  messages_used: number;
+  messages_limit: number;
 }
 
 export interface ConversationState {
@@ -175,6 +187,8 @@ export interface ConversationState {
   case_id: number;
   controller: "agent" | "advisor";
   controller_name: string | null;
+  plan: "free" | "premium";
+  usage: FreeUsage | null;
   messages: Message[];
 }
 

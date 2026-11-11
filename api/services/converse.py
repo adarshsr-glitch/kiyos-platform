@@ -30,6 +30,17 @@ from infra.schema import Case, Message
 from services._ai import ai_call, ai_enabled, find_pii, log_fallback_call, scrub_pii
 
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.7"))
+
+# Free plan (PRD §7 Free Q&A, decision 10 Nov 2026): three generic questions in total
+# per person; personal questions pivot to a paid offering from the first question.
+# FREE_MESSAGE_LIMIT caps all free back-and-forth, generic or not.
+FREE_GENERIC_LIMIT = int(os.getenv("FREE_GENERIC_LIMIT", "3"))
+FREE_MESSAGE_LIMIT = int(os.getenv("FREE_MESSAGE_LIMIT", "10"))
+FREE_CATEGORIES = ("generic", "generic_unanswered", "generic_over_limit", "personal")
+
+PLANS_ACTION = {"type": "plans", "label": "See plans", "href": "/portal/upgrade"}
+UPLOAD_ACTION = {"type": "upload", "label": "Open secure upload", "href": "/portal/documents"}
+VERIFY_ACTION = {"type": "verify", "label": "Update my details", "href": "/portal/verify"}
 MAX_TOOL_ROUNDS = 5
 RULE_ID_RE = re.compile(r"\b[A-Z]{2,4}-[A-Z0-9]+(?:-[A-Z0-9]+)+\b")
 
@@ -44,6 +55,7 @@ class Reply:
     route: bool = False
     reason: str | None = None
     draft: str | None = None  # the unreviewed answer, kept for the advisor when routed
+    action: dict | None = None  # call-to-action button shown under the message
 
 
 # ───────────────────────────────────────────────────────────── entry points
@@ -58,11 +70,134 @@ def guard_sensitive(text: str) -> tuple[str, Reply | None]:
     return scrub_pii(text), Reply(
         content=(
             f"Please don't share identity numbers ({kinds}) in chat. I haven't stored or "
-            "used it. You can add or update identity details securely on your "
-            "profile page: /portal/verify"
+            "used it. You can add or update identity details securely in your Kiyos workspace."
         ),
         confidence=1.0,
         reason="sensitive_data_guard",
+        action=VERIFY_ACTION,
+    )
+
+
+# ───────────────────────────────────────────────────────────── free plan
+
+_PERSONAL_RE = re.compile(
+    r"\b(i|i'm|im|i've|i'd|i'll|me|my|mine|myself|we|we're|we've|our|ours)\b",
+    re.IGNORECASE,
+)
+
+
+def classify_free_question(text: str) -> str:
+    """'personal' when the question is about the asker's own circumstances, else 'generic'.
+
+    Deterministic on purpose: the gate must be explainable and auditable.
+    "What is RNOR?" is generic; "Am I RNOR?" is personal.
+    """
+    # Lower-case "us" is the pronoun; "US" is the country.
+    personal = _PERSONAL_RE.search(text) or re.search(r"\bus\b", text)
+    return "personal" if personal else "generic"
+
+
+def free_usage(categories: list[str | None]) -> dict[str, int]:
+    used = [c for c in categories if c in FREE_CATEGORIES]
+    return {
+        "generic_used": sum(1 for c in used if c == "generic"),
+        "generic_limit": FREE_GENERIC_LIMIT,
+        "messages_used": len(used),
+        "messages_limit": FREE_MESSAGE_LIMIT,
+    }
+
+
+async def answer_free(
+    session: AsyncSession, case: Case, question: str, usage: dict[str, int]
+) -> tuple[Reply, str]:
+    """Free plan: generic education only. Returns (reply, category for the user message)."""
+    if classify_free_question(question) == "personal":
+        return Reply(
+            content=(
+                "That depends on your own situation, so it needs your full case — I can't "
+                "answer it on the free plan without guessing. With a paid plan, Kiyos works "
+                "it out from your documents and a named tax advisor reviews the answer."
+            ),
+            confidence=1.0,
+            reason="personal_question_pivot",
+            action=PLANS_ACTION,
+        ), "personal"
+
+    if usage["generic_used"] >= FREE_GENERIC_LIMIT:
+        return Reply(
+            content=(
+                f"You've used your {FREE_GENERIC_LIMIT} free questions. A paid plan gives you "
+                "unlimited questions about your case, answered from your documents and "
+                "reviewed by your advisor."
+            ),
+            confidence=1.0,
+            reason="free_generic_limit",
+            action=PLANS_ACTION,
+        ), "generic_over_limit"
+
+    started = time.monotonic()
+    reply: Reply | None = None
+    if ai_enabled():
+        try:
+            reply = await _answer_with_claude(session, case, [], question, generic=True)
+        except anthropic.APIError:
+            reply = None
+    if reply is None:
+        reply = _generic_from_knowledge(question)
+        log_fallback_call(session, service="converse", case_id=case.id, started=started)
+
+    known = {r.id for r in list_rules()}
+    reply.cited_rules = [r for r in reply.cited_rules if r in known]
+    if reply.route or reply.confidence < CONFIDENCE_THRESHOLD or not reply.cited_rules:
+        # Not covered by an approved rule: say so, and don't spend a free question.
+        return Reply(
+            content=(
+                "I can only answer from Kiyos's reviewed tax rules, and that topic isn't "
+                "covered yet — so I'd rather not guess. This didn't use one of your free questions."
+            ),
+            confidence=reply.confidence,
+            reason="generic_not_covered",
+        ), "generic_unanswered"
+
+    remaining = FREE_GENERIC_LIMIT - usage["generic_used"] - 1
+    reply.content += (
+        f"\n\nGeneral information only, not advice on your situation. "
+        + (f"{remaining} free question{'s' if remaining != 1 else ''} left." if remaining else "That was your last free question.")
+    )
+    return reply, "generic"
+
+
+_STOPWORDS = {
+    "what", "whats", "does", "how", "the", "and", "for", "mean", "means", "explain", "tell",
+    "about", "can", "who", "when", "why", "which", "with", "this", "that", "tax", "taxes",
+    "india", "indian", "are", "is", "does", "work", "rule", "rules", "there", "under",
+}
+
+
+_STATUTES = {"IN-ITA": "Income-tax Act", "US-IRC": "Internal Revenue Code"}
+
+
+def _generic_from_knowledge(question: str) -> Reply:
+    words = {w for w in re.findall(r"[a-z0-9]+", question.lower()) if len(w) >= 3} - _STOPWORDS
+    best, best_score = None, 0
+    for rule in list_rules():
+        hay = f"{rule.id} {rule.summary} {rule.notes or ''}".lower()
+        score = sum(1 for w in words if w in hay)
+        if score > best_score:
+            best, best_score = rule, score
+    if not best:
+        return Reply(content="", confidence=0.0, reason="No approved rule matches.")
+    source = best.sources[0] if best.sources else {}
+    statute = _STATUTES.get(str(source.get("id", "")).split("-S")[0], "")
+    section = source.get("section")
+    cite = f"{statute}, section {section}" if statute and section else statute
+    country = {"IN": "India", "US": "United States"}.get(best.jurisdiction, best.jurisdiction)
+    return Reply(
+        content=(
+            f"{best.summary.strip()}\n\nSource: {cite + ' · ' if cite else ''}{country}, tax year {best.tax_year}"
+        ),
+        confidence=0.85,
+        cited_rules=[best.id],
     )
 
 
@@ -301,15 +436,38 @@ def _history_messages(case: Case, history: list[Message], question: str) -> list
     return turns
 
 
+def _generic_system_prompt() -> str:
+    rules = "\n".join(
+        f"- {r.id} ({r.jurisdiction} {r.tax_year}): {r.summary.strip()}" for r in list_rules()
+    )
+    return f"""You are Kiyos, answering a free-plan visitor's general India–US tax question. You have no access to their case and must not personalise.
+
+- Answer only from the approved rules below (use lookup_rule for detail). If they don't cover the question, call submit_answer with needs_advisor true and a short reason; don't use general knowledge.
+- Two to four plain sentences. State the jurisdiction and tax year of the rule you rely on, and cite its ID in cited_rule_ids.
+- Never compute amounts.
+
+Finish by calling submit_answer.
+
+Approved rules:
+{rules or '- (none)'}
+"""
+
+
 async def _answer_with_claude(
-    session: AsyncSession, case: Case, history: list[Message], question: str
+    session: AsyncSession, case: Case, history: list[Message], question: str, generic: bool = False
 ) -> Reply | None:
-    system = _system_prompt(case)
-    messages = _history_messages(case, history, question)
+    if generic:
+        system = _generic_system_prompt()
+        messages: list[dict[str, Any]] = [{"role": "user", "content": scrub_pii(question)}]
+        tools = [t for t in _TOOLS if t["name"] in ("lookup_rule", "submit_answer")]
+    else:
+        system = _system_prompt(case)
+        messages = _history_messages(case, history, question)
+        tools = _TOOLS
 
     for _ in range(MAX_TOOL_ROUNDS):
         response = await ai_call(
-            session, service="converse", case_id=case.id, system=system, messages=messages, tools=_TOOLS
+            session, service="converse", case_id=case.id, system=system, messages=messages, tools=tools
         )
         if response.stop_reason == "refusal":
             return Reply(content="", confidence=0.0, route=True, reason="Model declined to answer.")
@@ -402,8 +560,8 @@ def _answer_deterministic(case: Case, question: str) -> Reply:
             )
         if todos:
             parts.append("Still needed from you: " + "; ".join(todos) + ".")
-        parts.append("You can upload securely at /portal/documents — please don't send files in chat.")
-        return Reply(content=" ".join(parts), confidence=0.85)
+        parts.append("Please upload through your secure workspace rather than sending files here.")
+        return Reply(content=" ".join(parts), confidence=0.85, action=UPLOAD_ACTION)
 
     if any(w in q for w in ("deadline", "due", "when is", "by when")):
         nd, overdue = status["next_deadline"], status["overdue"]

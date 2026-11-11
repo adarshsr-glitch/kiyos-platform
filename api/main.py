@@ -215,6 +215,7 @@ class CaseDetail(BaseModel):
     scenarios: list[ScenarioOut] = []
     conversation_id: Optional[int] = None
     profile_confirmed_at: Optional[datetime] = None
+    plan: str = "premium"
 
 class MessageOut(BaseModel):
     id: int
@@ -224,6 +225,8 @@ class MessageOut(BaseModel):
     confidence: Optional[float] = None
     routed: bool = False
     cited_rules: Optional[list[str]] = None
+    category: Optional[str] = None
+    action: Optional[dict] = None
     created_at: datetime
 
     @classmethod
@@ -231,7 +234,8 @@ class MessageOut(BaseModel):
         return cls(
             id=m.id, role=m.role, content=m.content, author=m.author,
             confidence=m.confidence, routed=bool(m.routed),
-            cited_rules=m.cited_rules, created_at=m.created_at,
+            cited_rules=m.cited_rules, category=m.category, action=m.action,
+            created_at=m.created_at,
         )
 
 class MessageIn(BaseModel):
@@ -455,6 +459,7 @@ async def get_case(case_id: int, session: AsyncSession = Depends(get_session)):
         ],
         conversation_id=convo_id,
         profile_confirmed_at=case.profile_confirmed_at,
+        plan=case.plan or "premium",
     )
 
 
@@ -767,6 +772,7 @@ _EVENT_TEXT = {
     "ticket.created": ("raised", "expert-review ticket"),
     "ticket.resolved": ("resolved", "expert-review ticket"),
     "call.requested": ("requested", "advisor call"),
+    "plan.changed": ("switched", "plan"),
 }
 
 
@@ -808,11 +814,20 @@ async def _load_case_full(session: AsyncSession, case_id: int) -> Case:
 TICKET_SLA = timedelta(hours=24)
 
 
+class FreeUsage(BaseModel):
+    generic_used: int
+    generic_limit: int
+    messages_used: int
+    messages_limit: int
+
+
 class ConversationState(BaseModel):
     id: int
     case_id: int
     controller: Literal["agent", "advisor"]
     controller_name: Optional[str] = None
+    plan: str = "premium"
+    usage: Optional[FreeUsage] = None   # free plan only
     messages: list[MessageOut]
 
 
@@ -842,10 +857,15 @@ async def _conversation_state(session: AsyncSession, convo: Conversation) -> Con
     result = await session.execute(
         select(Message).where(Message.conversation_id == convo.id).order_by(Message.created_at, Message.id)
     )
+    messages = result.scalars().all()
+    case = await session.get(Case, convo.case_id)
+    plan = (case.plan if case else None) or "premium"
     return ConversationState(
         id=convo.id, case_id=convo.case_id,
         controller=convo.controller or "agent", controller_name=convo.controller_name,
-        messages=[MessageOut.of(m) for m in result.scalars().all()],
+        plan=plan,
+        usage=FreeUsage(**converse.free_usage([m.category for m in messages])) if plan == "free" else None,
+        messages=[MessageOut.of(m) for m in messages],
     )
 
 
@@ -871,6 +891,12 @@ async def send_message(conv_id: int, body: MessageIn, session: AsyncSession = De
         select(Message).where(Message.conversation_id == conv_id).order_by(Message.created_at, Message.id)
     )).scalars().all()
 
+    case_row = await session.get(Case, convo.case_id)
+    free = (case_row.plan if case_row else "premium") == "free"
+    usage = converse.free_usage([m.category for m in history]) if free else None
+    if usage and usage["messages_used"] >= usage["messages_limit"]:
+        raise HTTPException(status_code=402, detail="Free conversation limit reached — choose a plan to continue")
+
     safe_text, guard_reply = converse.guard_sensitive(text)
     user_msg = Message(conversation_id=conv_id, role="user", content=safe_text, created_at=_now())
     session.add(user_msg)
@@ -879,6 +905,8 @@ async def send_message(conv_id: int, body: MessageIn, session: AsyncSession = De
 
     if guard_reply is not None:
         reply = guard_reply
+    elif free:
+        reply, user_msg.category = await converse.answer_free(session, case_row, safe_text, usage)
     elif convo.controller == "advisor":
         reply = None  # the advisor answers in person
     else:
@@ -889,7 +917,7 @@ async def send_message(conv_id: int, body: MessageIn, session: AsyncSession = De
         assistant_msg = Message(
             conversation_id=conv_id, role="assistant", content=reply.content, author="Kiyos",
             confidence=reply.confidence, routed=reply.route, cited_rules=reply.cited_rules or None,
-            created_at=_now(),
+            action=reply.action, created_at=_now(),
         )
         session.add(assistant_msg)
         await session.flush()
@@ -1199,6 +1227,27 @@ async def upload_document(
     await session.commit()
     return DocumentOut(id=doc.id, filename=doc.filename, doc_type=doc.doc_type,
                        status=doc.status, created_at=doc.created_at)
+
+
+# ---------------------------------------------------------------------------
+# Plan entitlement (M2.4). The prototype has no payments: the portal sets the
+# plan when the customer finishes onboarding (free) or upgrades (premium).
+# ---------------------------------------------------------------------------
+
+class PlanIn(BaseModel):
+    plan: Literal["free", "premium"]
+
+
+@app.post("/cases/{case_id}/plan", response_model=CaseDetail)
+async def set_plan(case_id: int, body: PlanIn, session: AsyncSession = Depends(get_session)):
+    case = await session.get(Case, case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if case.plan != body.plan:
+        case.plan = body.plan
+        _record_event(session, case_id, "customer", "plan.changed", "case", case_id, {"label": body.plan})
+        await session.commit()
+    return await get_case(case_id, session)
 
 
 # ---------------------------------------------------------------------------

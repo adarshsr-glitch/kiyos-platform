@@ -61,6 +61,7 @@ export default async function CaseDetailPage({
               initialMessages={messages}
               caseClientName={caseData.client_name}
               advisorName={caseData.case_captain}
+              className="border-l"
             />
           ) : (
             <div className="flex h-full items-center justify-center border-l p-6 text-center">

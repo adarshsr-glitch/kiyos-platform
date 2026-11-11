@@ -196,6 +196,13 @@ export function uploadDocument(
   });
 }
 
+export function setCasePlan(
+  caseId: number | string,
+  plan: "free" | "premium"
+): Promise<CaseDetail> {
+  return postJson<CaseDetail>(`/cases/${caseId}/plan`, { plan });
+}
+
 export function requestAdvisorCall(
   caseId: number | string,
   slot: string,

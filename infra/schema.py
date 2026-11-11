@@ -63,6 +63,8 @@ class Case(Base):
     case_captain: Mapped[str] = mapped_column(String(255), default="demo")
     arrival_date: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     tax_year: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # M2.4 entitlement: "free" (generic Q&A only, capped) | "premium" (case Q&A + advisor)
+    plan: Mapped[str] = mapped_column(String(20), default="premium")
     # M4 verify-and-confirm: set when the customer confirms the pre-filled profile
     profile_confirmed_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
@@ -157,6 +159,11 @@ class Message(Base):
     confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     routed: Mapped[bool] = mapped_column(default=False)
     cited_rules: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    # Free-tier pivot instrumentation on user messages:
+    # generic | generic_unanswered | generic_over_limit | personal
+    category: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    # Contextual call-to-action rendered under an agent message: {type, label, href}
+    action: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
 
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")

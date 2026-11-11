@@ -1,177 +1,129 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { WealthPanel } from "@/components/portal/wealth-panel";
-import { DashboardDocuments } from "@/components/portal/dashboard-documents";
+import { useEffect, useMemo } from "react";
+import { toast } from "sonner";
 import { ChatPanel } from "@/components/chat-panel";
-import { PortalCaseHeader } from "@/components/portal/portal-case-header";
-import { NextActionCard } from "@/components/portal/next-action-card";
-import { CaseCaptainCard } from "@/components/portal/case-captain-card";
-import Link from "next/link";
-import { Button } from "@/components/ui/button";
+import { UpNext, buildTasks } from "@/components/portal/up-next";
+import { CaseProgress, DocumentsSummary } from "@/components/portal/case-progress";
+import { FinancialPicture } from "@/components/portal/financial-picture";
+import { CaptainChip } from "@/components/portal/captain-chip";
+import { missingRequiredDocs } from "@/components/portal/document-checklist";
 import { useCustomer } from "@/lib/customer-context";
-import { Card, CardContent } from "@/components/ui/card";
-import { CheckCircle2, ClipboardCheck, X } from "lucide-react";
-import type { CaseDetail, DocumentItem, Fact, Message } from "@/lib/types";
+import { pictureFromFacts, pictureFromOnboarding } from "@/lib/financial-picture";
+import { formatDate, relativeDays } from "@/lib/format";
+import { FREE_PROMPTS, PREMIUM_PROMPTS, welcomeMessage } from "@/lib/portal-chat";
+import type { CaseDetail, Message } from "@/lib/types";
 
-const CUSTOMER_PROMPTS = [
-  "What documents do I need?",
-  "Explain my tax situation",
-  "What should I do first?",
-  "When is my next deadline?",
-];
-
-interface DashboardClientProps {
-  caseData: CaseDetail;
-  openActionCount: number;
-  facts: Fact[];
-  documents: DocumentItem[];
-  conversationId: number | null;
-  initialMessages: Message[];
-  advisorGreeting: string | null;
+function greeting() {
+  const h = new Date().getHours();
+  return h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
 }
 
 export function DashboardClient({
   caseData,
-  openActionCount,
-  facts,
-  documents,
-  conversationId,
   initialMessages,
-  advisorGreeting,
-}: DashboardClientProps) {
-  const { tier } = useCustomer();
-  const [showUpgradeBanner, setShowUpgradeBanner] = useState(false);
+}: {
+  caseData: CaseDetail;
+  initialMessages: Message[];
+}) {
+  const { tier, onboardingData } = useCustomer();
+  const premium = tier === "premium";
+  const firstName = caseData.client_name.split(" ")[0];
 
   useEffect(() => {
-    const justUpgraded = localStorage.getItem("kiyos-just-upgraded");
-    if (justUpgraded === "true") {
-      setShowUpgradeBanner(true);
+    if (localStorage.getItem("kiyos-just-upgraded") === "true") {
       localStorage.removeItem("kiyos-just-upgraded");
+      toast.success(`You're on the full plan. ${caseData.case_captain} is now your case captain.`);
     }
-  }, []);
+  }, [caseData.case_captain]);
 
-  const hasExistingAssistantMessages = initialMessages.some(
-    (m) => m.role === "assistant"
-  );
+  const tasks = useMemo(() => buildTasks(caseData, tier), [caseData, tier]);
 
-  const messagesWithGreeting: Message[] =
-    advisorGreeting && !hasExistingAssistantMessages
-      ? [
-          {
-            id: 0,
-            role: "assistant" as const,
-            content: advisorGreeting,
-            created_at: new Date().toISOString(),
-          },
-          ...initialMessages,
-        ]
-      : initialMessages;
+  const picture = useMemo(() => {
+    const fromFacts = pictureFromFacts(caseData.facts, caseData.members.map((m) => m.name));
+    return fromFacts.length > 0
+      ? fromFacts
+      : pictureFromOnboarding(onboardingData.income?.sources, onboardingData.assets?.items);
+  }, [caseData, onboardingData]);
 
-  const needsDocs = documents.some((d) => d.status === "uploaded");
-  const assessmentReady = caseData.assessments.length > 0;
+  const today = new Date().toISOString().slice(0, 10);
+  const nextDeadline = [
+    ...caseData.action_items.filter((i) => i.status !== "done").map((i) => i.due_date),
+    ...caseData.topics.filter((t) => t.status !== "resolved").map((t) => t.due_date),
+  ]
+    .filter((d): d is string => !!d && d >= today)
+    .sort()[0];
+
+  const journey = caseData.name.split("—")[1]?.trim();
+  const settled = caseData.topics.filter((t) => t.status === "resolved").length;
+
+  const messages =
+    initialMessages.length === 0 ? [welcomeMessage(firstName, tier)] : initialMessages;
 
   return (
-    <div className="space-y-4">
-      {/* Upgrade welcome banner */}
-      {showUpgradeBanner && (
-        <Card className="border-emerald-300 bg-emerald-50">
-          <CardContent className="flex items-start gap-3 p-4">
-            <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0 mt-0.5" />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-emerald-900">
-                Welcome to your premium experience!
-              </p>
-              <p className="mt-0.5 text-xs text-emerald-700">
-                You now have access to dedicated advisor support, a comprehensive
-                tax assessment, and full document review. Your case captain will
-                reach out within 24 hours.
-              </p>
-            </div>
-            <button
-              onClick={() => setShowUpgradeBanner(false)}
-              className="shrink-0 rounded p-1 text-emerald-600 hover:text-emerald-800 transition-colors"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Next action CTA */}
-      <NextActionCard
-        tier={tier}
-        needsDocs={needsDocs}
-        assessmentReady={assessmentReady}
-      />
-
-      {/* Named advisor + quarterly call */}
-      <CaseCaptainCard
-        caseId={caseData.id}
-        captain={caseData.case_captain}
-        clientName={caseData.client_name}
-      />
-
-      {/* Verify-and-confirm prompt until the customer has confirmed their details */}
-      {!caseData.profile_confirmed_at && facts.length > 0 && (
-        <Card className="border-amber-200 bg-amber-50/60">
-          <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
-            <ClipboardCheck className="h-5 w-5 shrink-0 text-amber-700" />
-            <div className="flex-1">
-              <p className="text-sm font-semibold text-amber-950">Check the details we have for you</p>
-              <p className="text-xs text-amber-800">
-                We&apos;ve pre-filled {facts.length} facts from your documents. A quick check now
-                keeps your assessment accurate.
-              </p>
-            </div>
-            <Button asChild size="sm" className="rounded-full">
-              <Link href="/portal/verify">Review &amp; confirm</Link>
-            </Button>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Compact case header */}
-      <PortalCaseHeader caseData={caseData} />
-
-      {/* Two-column grid: Wealth (60%) | Chat (40%) */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[3fr_2fr]">
-        {/* Left column — Wealth panel */}
-        <div className="min-w-0">
-          <WealthPanel facts={facts} openActionCount={openActionCount} />
-        </div>
-
-        {/* Right column — Ask Kiyos chat */}
-        <div className="min-w-0">
-          <div
-            className="rounded-xl border bg-card overflow-hidden"
-            style={{ height: "min(calc(100vh - 220px), 600px)" }}
-          >
-            {conversationId ? (
-              <ChatPanel
-                conversationId={conversationId}
-                initialMessages={messagesWithGreeting}
-                caseClientName={caseData.client_name}
-                suggestedPrompts={CUSTOMER_PROMPTS}
-                embedded
-                portalMode
-              />
-            ) : (
-              <ChatPanel
-                conversationId={1}
-                initialMessages={messagesWithGreeting}
-                caseClientName={caseData.client_name}
-                suggestedPrompts={CUSTOMER_PROMPTS}
-                embedded
-                portalMode
-              />
-            )}
+    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_380px] lg:items-start">
+      <div className="min-w-0 space-y-4">
+        <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+          <div className="min-w-0">
+            <p className="text-xs text-muted-foreground">
+              {[caseData.tax_year && `Tax year ${caseData.tax_year}`, journey].filter(Boolean).join(" · ")}
+            </p>
+            <h1 className="mt-0.5 font-serif text-2xl font-medium text-foreground sm:text-[28px]">
+              {greeting()}, {firstName}
+            </h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {premium && caseData.topics.length > 0
+                ? `${settled} of ${caseData.topics.length} tax questions settled`
+                : "Free plan · general guidance only"}
+              {premium && nextDeadline && (
+                <>
+                  {" · "}
+                  <span className="text-foreground">
+                    next deadline {formatDate(nextDeadline, { day: "numeric", month: "short" })}
+                  </span>{" "}
+                  ({relativeDays(nextDeadline)})
+                </>
+              )}
+            </p>
           </div>
+          {premium && (
+            <CaptainChip
+              caseId={caseData.id}
+              captain={caseData.case_captain}
+              clientName={caseData.client_name}
+            />
+          )}
+        </header>
+
+        <UpNext tasks={tasks} />
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <CaseProgress topics={caseData.topics} locked={!premium} />
+          <DocumentsSummary
+            documents={caseData.documents}
+            neededCount={missingRequiredDocs(caseData.documents, premium).length}
+            locked={!premium}
+          />
         </div>
+
+        <FinancialPicture items={picture} />
       </div>
 
-      {/* Full-width documents section below */}
-      <DashboardDocuments documents={documents} />
+      {/* Desktop: the WhatsApp thread sits beside the case. Mobile: it's the Chat tab. */}
+      <aside className="hidden lg:sticky lg:top-[76px] lg:block lg:h-[calc(100vh-100px)]">
+        {caseData.conversation_id && (
+          <ChatPanel
+            conversationId={caseData.conversation_id}
+            initialMessages={messages}
+            caseClientName={caseData.client_name}
+            suggestedPrompts={premium ? PREMIUM_PROMPTS : FREE_PROMPTS}
+            caseId={caseData.id}
+            captainName={caseData.case_captain}
+            embedded
+            portalMode
+          />
+        )}
+      </aside>
     </div>
   );
 }
