@@ -1,6 +1,13 @@
 import Link from "next/link";
-import { getCase, listMessages, listAuditLog } from "@/lib/api";
-import { CaseTabs } from "@/components/case-tabs";
+import {
+  getCase,
+  listMessages,
+  listAuditLog,
+  listCaseTickets,
+  listCaseEvents,
+} from "@/lib/api";
+import { CaseWorkspace } from "@/components/case-workspace";
+import { CaseHero } from "@/components/case-hero";
 import { ChatPanel } from "@/components/chat-panel";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ChevronRight } from "lucide-react";
@@ -10,9 +17,11 @@ export default async function CaseDetailPage({
 }: {
   params: { id: string };
 }) {
-  const [caseData, auditLog] = await Promise.all([
+  const [caseData, auditLog, tickets, events] = await Promise.all([
     getCase(params.id),
     listAuditLog(params.id),
+    listCaseTickets(params.id),
+    listCaseEvents(params.id),
   ]);
 
   const messages = caseData.conversation_id
@@ -21,8 +30,7 @@ export default async function CaseDetailPage({
 
   return (
     <div className="flex h-full flex-col">
-      {/* Top bar / breadcrumb */}
-      <header className="flex h-14 shrink-0 items-center border-b px-6">
+      <header className="flex h-14 shrink-0 items-center border-b px-6 bg-background/95 backdrop-blur">
         <nav className="flex items-center gap-1.5 text-sm">
           <Link
             href="/cases"
@@ -31,25 +39,28 @@ export default async function CaseDetailPage({
             Cases
           </Link>
           <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-          <span className="font-medium text-foreground">
-            {caseData.client_name}
-          </span>
+          <span className="font-medium text-foreground">{caseData.client_name}</span>
         </nav>
       </header>
 
-      {/* Two-column workspace */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Left 2/3: case detail with tabs */}
         <ScrollArea className="flex-[2] min-w-0">
-          <CaseTabs caseData={caseData} auditLog={auditLog} />
+          <CaseHero caseData={caseData} />
+          <CaseWorkspace
+            caseData={caseData}
+            auditLog={auditLog}
+            tickets={tickets}
+            events={events}
+          />
         </ScrollArea>
 
-        {/* Right 1/3: chat panel */}
         <div className="w-[380px] shrink-0">
           {caseData.conversation_id ? (
             <ChatPanel
               conversationId={caseData.conversation_id}
               initialMessages={messages}
+              caseClientName={caseData.client_name}
+              advisorName={caseData.case_captain}
             />
           ) : (
             <div className="flex h-full items-center justify-center border-l p-6 text-center">

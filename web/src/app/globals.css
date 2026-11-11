@@ -4,30 +4,30 @@
 
 @layer base {
   :root {
-    /* Warm neutral palette — stone surfaces, slate text, muted teal accent */
-    --background: 36 33% 97%;       /* stone-50 */
-    --foreground: 215 28% 17%;      /* slate-900 */
+    /* Kiyos brand palette — forest green + warm cream, pulled from kiyos.club */
+    --background: 45 28% 97%;       /* #FAF9F6 warm cream */
+    --foreground: 60 4% 11%;        /* #1C1C1A near-black */
     --card: 0 0% 100%;
-    --card-foreground: 215 28% 17%;
+    --card-foreground: 60 4% 11%;
     --popover: 0 0% 100%;
-    --popover-foreground: 215 28% 17%;
-    --primary: 181 80% 25%;         /* #0d7377 muted teal */
-    --primary-foreground: 0 0% 100%;
-    --secondary: 40 21% 94%;        /* stone-100 */
-    --secondary-foreground: 215 28% 17%;
-    --muted: 40 21% 94%;            /* stone-100 */
-    --muted-foreground: 215 16% 47%;
-    --accent: 40 21% 94%;
-    --accent-foreground: 215 28% 17%;
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 30 13% 89%;           /* stone-200 */
-    --input: 30 13% 89%;
-    --ring: 181 80% 25%;            /* teal accent for focus rings */
-    --radius: 0.5rem;
-    --sidebar: 0 0% 100%;
-    --sidebar-foreground: 215 28% 17%;
-    --sidebar-border: 30 13% 89%;
+    --popover-foreground: 60 4% 11%;
+    --primary: 152 69% 19%;         /* #0F5132 deep forest green */
+    --primary-foreground: 45 28% 97%;
+    --secondary: 45 20% 93%;        /* paler cream for subtle fills */
+    --secondary-foreground: 60 4% 11%;
+    --muted: 45 20% 93%;
+    --muted-foreground: 60 4% 40%;
+    --accent: 45 20% 93%;
+    --accent-foreground: 60 4% 11%;
+    --destructive: 0 65% 42%;       /* kiyos-ish muted red */
+    --destructive-foreground: 45 28% 97%;
+    --border: 45 15% 88%;
+    --input: 45 15% 88%;
+    --ring: 152 69% 19%;
+    --radius: 0.75rem;              /* softer radii to match the brand */
+    --sidebar: 45 28% 97%;
+    --sidebar-foreground: 60 4% 11%;
+    --sidebar-border: 45 15% 88%;
   }
 }
 
@@ -38,5 +38,17 @@
   body {
     @apply bg-background text-foreground;
     font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
+
+@layer utilities {
+  .font-serif {
+    font-family: var(--font-playfair), Georgia, serif;
+    font-feature-settings: "liga" 1, "dlig" 1;
+  }
+  .brand-wordmark {
+    font-family: var(--font-playfair), Georgia, serif;
+    letter-spacing: 0.08em;
+    font-weight: 500;
   }
 }

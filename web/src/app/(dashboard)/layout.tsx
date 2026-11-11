@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { ViewToggle } from "@/components/view-toggle";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
@@ -36,9 +37,18 @@ export default function DashboardLayout({
       <aside className="flex w-60 flex-col border-r border-sidebar-border bg-sidebar">
         {/* Wordmark */}
         <div className="flex h-14 items-center px-5">
-          <span className="text-lg font-semibold tracking-tight text-foreground">
+          <span className="brand-wordmark text-xl uppercase text-primary">
             Kiyos
           </span>
+          <span className="ml-2 text-[10px] uppercase tracking-widest text-muted-foreground">
+            Captain
+          </span>
+        </div>
+
+        <Separator />
+
+        <div className="px-4 py-3">
+          <ViewToggle />
         </div>
 
         <Separator />

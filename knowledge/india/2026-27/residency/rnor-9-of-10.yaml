@@ -1,0 +1,66 @@
+id: IN-RES-RNOR-9OF10
+jurisdiction: IN
+tax_year: "2026-27"
+
+sources:
+  - id: IN-ITA-S6
+    section: "6(6)(a)"
+    passage: >-
+      A person is said to be "not ordinarily resident" in India in any
+      previous year if such person is an individual who has been a
+      non-resident in India in nine out of the ten previous years preceding
+      that year.
+
+summary: >-
+  An individual who is a resident in India for the current year is treated as
+  Resident but Not Ordinarily Resident (RNOR) if they were a non-resident in
+  at least 9 of the 10 preceding previous years.
+
+inputs:
+  - name: previous_year_statuses
+    type: array[enum[NR, RNOR, ROR]]
+    length: 10
+    description: >-
+      Residency status for each of the ten previous years immediately
+      preceding the current tax year, in reverse chronological order
+      (index 0 = PY-1, index 9 = PY-10).
+
+logic:
+  kind: threshold_count
+  count_of: NR
+  within: previous_year_statuses
+  operator: ">="
+  threshold: 9
+  returns:
+    true: RNOR_QUALIFIED
+    false: NOT_RNOR_BY_THIS_LIMB
+
+status: active
+
+notes: >-
+  Section 6(6) provides two independent limbs for RNOR classification:
+  limb (a) — this rule — tests the 9-of-10 condition, and limb (b) tests
+  physical presence of 729 days or less in India during the 7 preceding
+  years. An individual qualifies as RNOR if EITHER limb is satisfied.
+  See IN-RES-RNOR-729DAYS for the other limb.
+
+test_cases:
+  - name: "Standard returnee after 10 straight NR years"
+    inputs:
+      previous_year_statuses: [NR, NR, NR, NR, NR, NR, NR, NR, NR, NR]
+    expected: true
+
+  - name: "9 NR + 1 RNOR (edge case — threshold met exactly)"
+    inputs:
+      previous_year_statuses: [NR, NR, NR, NR, NR, NR, NR, NR, NR, RNOR]
+    expected: true
+
+  - name: "Only 8 NR years — fails this limb"
+    inputs:
+      previous_year_statuses: [NR, NR, NR, NR, NR, NR, NR, NR, RNOR, RNOR]
+    expected: false
+
+  - name: "Long-time resident returning to NR status — fails"
+    inputs:
+      previous_year_statuses: [NR, NR, ROR, ROR, ROR, ROR, ROR, ROR, ROR, ROR]
+    expected: false

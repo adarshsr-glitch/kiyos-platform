@@ -1,22 +1,26 @@
 import type { Metadata } from "next";
-import localFont from "next/font/local";
+import { Inter, Playfair_Display } from "next/font/google";
 import { Toaster } from "@/components/ui/sonner";
+import { ViewProvider } from "@/lib/view-context";
 import "./globals.css";
 
-const geistSans = localFont({
-  src: "./fonts/GeistVF.woff",
-  variable: "--font-geist-sans",
-  weight: "100 900",
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
 });
-const geistMono = localFont({
-  src: "./fonts/GeistMonoVF.woff",
-  variable: "--font-geist-mono",
-  weight: "100 900",
+
+const playfair = Playfair_Display({
+  subsets: ["latin"],
+  variable: "--font-playfair",
+  display: "swap",
+  style: ["normal", "italic"],
+  weight: ["400", "500", "600", "700"],
 });
 
 export const metadata: Metadata = {
   title: "Kiyos — Case Captain Workspace",
-  description: "Cross-border tax advisory platform",
+  description: "Cross-border tax advisory for NRIs and returning NRIs",
 };
 
 export default function RootLayout({
@@ -27,9 +31,11 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} font-[family-name:var(--font-geist-sans)] antialiased`}
+        className={`${inter.variable} ${playfair.variable} font-[family-name:var(--font-inter)] antialiased`}
       >
-        {children}
+        <ViewProvider>
+          {children}
+        </ViewProvider>
         <Toaster />
       </body>
     </html>
