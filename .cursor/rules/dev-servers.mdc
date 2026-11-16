@@ -1,0 +1,8 @@
+---
+description: How to run the Kiyos prototype locally
+alwaysApply: true
+---
+- Do not start dev servers yourself (`pnpm dev`, `next dev`, `uvicorn`). Two web servers in this folder share `web/.next` and corrupt each other's build, which shows up as 500 errors and "MODULE_NOT_FOUND".
+- To run or restart the app, use `make up` from `kiyos-platform/` (stops old copies, clears the cache, starts the API on :8000 and web on :3000). `make down` stops everything.
+- If the servers are already up (http://localhost:3000 and http://localhost:8000/health respond), reuse them.
+- Logs: `data/logs/web.log` and `data/logs/api.log`.

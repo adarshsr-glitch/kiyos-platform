@@ -1,10 +1,12 @@
-.PHONY: help install dev dev-web dev-api test test-engine test-knowledge test-api lint seed reset-db clean
+.PHONY: help install up down dev dev-web dev-api test test-engine test-knowledge test-api lint seed reset-db clean
 
 help:
 	@echo "Kiyos platform — localhost dev"
 	@echo ""
 	@echo "  make install        install web + api dependencies"
 	@echo "  make seed           create ./data/kiyos.db with a demo case"
+	@echo "  make up             start api (:8000) + web (:3000), stopping any old copies first"
+	@echo "  make down           stop every copy of the api and web servers"
 	@echo "  make dev            run web (:3000) and api (:8000) together"
 	@echo "  make dev-web        run only Next.js"
 	@echo "  make dev-api        run only FastAPI"
@@ -19,6 +21,12 @@ help:
 install:
 	cd web && pnpm install
 	cd api && poetry install
+
+up:
+	@./scripts/dev.sh
+
+down:
+	@./scripts/dev.sh down
 
 dev:
 	@(cd api && poetry run uvicorn main:app --reload --port 8000) & \
