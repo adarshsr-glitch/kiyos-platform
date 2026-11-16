@@ -34,6 +34,7 @@ Endpoints:
 
 import hashlib
 import os
+import random
 import re
 import sys
 from contextlib import asynccontextmanager
@@ -74,9 +75,13 @@ from infra.schema import (  # noqa: E402
     Scenario,
     Ticket,
     CaseEvent,
+    InitialScan,
+    DocumentRequest,
+    ProfileChange,
 )
 from engine.rules import load_rule  # noqa: E402
-from services import converse  # noqa: E402
+from services import converse, intake  # noqa: E402
+from infra.journey import seed_journey, seed_prospects  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +129,8 @@ class CaseListItem(BaseModel):
     arrival_date: Optional[str] = None
     tax_year: Optional[str] = None
     updated_at: datetime
+    plan: str = "premium"
+    journey: str = "paid"                   # see _journey()
     # computed badges for the list row
     open_items_count: int = 0
     open_topics_count: int = 0
@@ -216,6 +223,13 @@ class CaseDetail(BaseModel):
     conversation_id: Optional[int] = None
     profile_confirmed_at: Optional[datetime] = None
     plan: str = "premium"
+    stage: Optional[str] = None             # WhatsApp journey: intake | free | paid
+    plan_choice: Optional[dict] = None
+    activated_at: Optional[datetime] = None
+    country_status: Optional[dict] = None
+    reviewers: Optional[list] = None
+    phone: Optional[str] = None
+    journey: str = "paid"                   # see _journey()
 
 class MessageOut(BaseModel):
     id: int
@@ -227,6 +241,7 @@ class MessageOut(BaseModel):
     cited_rules: Optional[list[str]] = None
     category: Optional[str] = None
     action: Optional[dict] = None
+    options: Optional[list[str]] = None
     created_at: datetime
 
     @classmethod
@@ -235,7 +250,7 @@ class MessageOut(BaseModel):
             id=m.id, role=m.role, content=m.content, author=m.author,
             confidence=m.confidence, routed=bool(m.routed),
             cited_rules=m.cited_rules, category=m.category, action=m.action,
-            created_at=m.created_at,
+            options=m.options, created_at=m.created_at,
         )
 
 class MessageIn(BaseModel):
@@ -287,6 +302,8 @@ class ActivityEntry(BaseModel):
 async def lifespan(app: FastAPI):
     os.makedirs("data/documents", exist_ok=True)
     await init_db()
+    await seed_journey()
+    await seed_prospects()
     yield
 
 
@@ -299,7 +316,9 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000").split(","),
+    allow_origins=[o for o in os.getenv("CORS_ORIGINS", "").split(",") if o],
+    # Any local port: a second dev server on :3001 shouldn't break every browser call.
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -315,6 +334,21 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+def _journey(case: Case, convo: "Conversation | None") -> str:
+    """Where the customer is in the funnel, one value for both workspaces:
+    intake (scan running) → signup (scan done, workspace not opened yet) → free →
+    payment_pending (plan chosen, payment failed) → paid."""
+    if (case.plan or "premium") == "premium":
+        return "paid"
+    if convo and convo.stage == "intake":
+        return "intake"
+    if case.status == "lead":
+        return "signup"
+    if case.plan_choice and not case.activated_at:
+        return "payment_pending"
+    return "free"
+
+
 @app.get("/cases", response_model=list[CaseListItem])
 async def list_cases(session: AsyncSession = Depends(get_session)):
     result = await session.execute(
@@ -323,6 +357,7 @@ async def list_cases(session: AsyncSession = Depends(get_session)):
             selectinload(Case.action_items),
             selectinload(Case.topics),
             selectinload(Case.notices),
+            selectinload(Case.conversations),
         )
         .order_by(Case.updated_at.desc())
     )
@@ -338,6 +373,8 @@ async def list_cases(session: AsyncSession = Depends(get_session)):
             arrival_date=c.arrival_date,
             tax_year=c.tax_year,
             updated_at=c.updated_at,
+            plan=c.plan or "premium",
+            journey=_journey(c, _current_conversation(c.conversations)),
             open_items_count=sum(1 for i in c.action_items if i.status != "done"),
             open_topics_count=sum(1 for t in c.topics if t.status != "resolved"),
             open_notices_count=sum(1 for n in c.notices if n.status != "resolved"),
@@ -368,7 +405,8 @@ async def get_case(case_id: int, session: AsyncSession = Depends(get_session)):
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
 
-    convo_id = case.conversations[0].id if case.conversations else None
+    convo = _current_conversation(case.conversations)
+    convo_id = convo.id if convo else None
 
     return CaseDetail(
         id=case.id,
@@ -460,6 +498,13 @@ async def get_case(case_id: int, session: AsyncSession = Depends(get_session)):
         conversation_id=convo_id,
         profile_confirmed_at=case.profile_confirmed_at,
         plan=case.plan or "premium",
+        stage=convo.stage if convo else None,
+        plan_choice=case.plan_choice,
+        activated_at=case.activated_at,
+        country_status=case.country_status,
+        reviewers=case.reviewers,
+        phone=case.phone,
+        journey=_journey(case, convo),
     )
 
 
@@ -556,7 +601,7 @@ async def dashboard_stats(session: AsyncSession = Depends(get_session)):
 
     # Open cases
     open_cases = (await session.execute(
-        select(func.count(Case.id)).where(Case.status == "active")
+        select(func.count(Case.id)).where(Case.status == "active", Case.plan == "premium")
     )).scalar_one()
 
     # Cases updated this week
@@ -603,7 +648,7 @@ async def dashboard_stats(session: AsyncSession = Depends(get_session)):
     # Workload by captain
     captain_rows = (await session.execute(
         select(Case.case_captain, func.count(Case.id))
-        .where(Case.status == "active")
+        .where(Case.status == "active", Case.plan == "premium")
         .group_by(Case.case_captain)
     )).all()
 
@@ -633,6 +678,8 @@ async def dashboard_activity(session: AsyncSession = Depends(get_session)):
 
     # Case updated
     for c in cases:
+        if c.case_captain in ("Unassigned", "demo"):
+            continue  # no expert on it yet; the customer's own events say what happened
         entries.append(ActivityEntry(
             at=c.updated_at, case_id=c.id, case_name=c.name,
             client_name=c.client_name, actor=c.case_captain,
@@ -773,6 +820,11 @@ _EVENT_TEXT = {
     "ticket.resolved": ("resolved", "expert-review ticket"),
     "call.requested": ("requested", "advisor call"),
     "plan.changed": ("switched", "plan"),
+    "plan.activated": ("activated", "plan"),
+    "scan.completed": ("completed", "initial scan"),
+    "scan.saved": ("saved", "initial scan"),
+    "profile.change_confirmed": ("confirmed", "profile change"),
+    "profile.change_rejected": ("rejected", "profile change"),
 }
 
 
@@ -817,8 +869,6 @@ TICKET_SLA = timedelta(hours=24)
 class FreeUsage(BaseModel):
     generic_used: int
     generic_limit: int
-    messages_used: int
-    messages_limit: int
 
 
 class ConversationState(BaseModel):
@@ -827,7 +877,9 @@ class ConversationState(BaseModel):
     controller: Literal["agent", "advisor"]
     controller_name: Optional[str] = None
     plan: str = "premium"
+    stage: Optional[str] = None
     usage: Optional[FreeUsage] = None   # free plan only
+    intake_progress: Optional[dict] = None  # {answered, total} while the scan runs
     messages: list[MessageOut]
 
 
@@ -864,7 +916,12 @@ async def _conversation_state(session: AsyncSession, convo: Conversation) -> Con
         id=convo.id, case_id=convo.case_id,
         controller=convo.controller or "agent", controller_name=convo.controller_name,
         plan=plan,
-        usage=FreeUsage(**converse.free_usage([m.category for m in messages])) if plan == "free" else None,
+        stage=convo.stage,
+        intake_progress=intake.progress(convo.intake) if convo.stage == "intake" else None,
+        usage=(
+            FreeUsage(**converse.free_usage([m.category for m in messages]))
+            if plan == "free" and convo.stage == "free" else None
+        ),
         messages=[MessageOut.of(m) for m in messages],
     )
 
@@ -892,10 +949,10 @@ async def send_message(conv_id: int, body: MessageIn, session: AsyncSession = De
     )).scalars().all()
 
     case_row = await session.get(Case, convo.case_id)
+    if convo.stage == "intake":
+        return await _intake_turn(session, convo, case_row, text)
     free = (case_row.plan if case_row else "premium") == "free"
     usage = converse.free_usage([m.category for m in history]) if free else None
-    if usage and usage["messages_used"] >= usage["messages_limit"]:
-        raise HTTPException(status_code=402, detail="Free conversation limit reached — choose a plan to continue")
 
     safe_text, guard_reply = converse.guard_sensitive(text)
     user_msg = Message(conversation_id=conv_id, role="user", content=safe_text, created_at=_now())
@@ -1185,6 +1242,7 @@ async def upload_document(
     case_id: int,
     file: UploadFile = File(...),
     doc_type: Optional[str] = Form(None),
+    request_id: Optional[int] = Form(None),
     uploaded_by: str = Form("customer"),
     session: AsyncSession = Depends(get_session),
 ):
@@ -1222,8 +1280,14 @@ async def upload_document(
     )
     session.add(doc)
     await session.flush()
+    if request_id is not None:
+        req = await session.get(DocumentRequest, request_id)
+        if not req or req.case_id != case_id:
+            raise HTTPException(status_code=422, detail="Upload task not found on this case")
+        req.status, req.document_id, req.rejection_reason = "received", doc.id, None
+        doc.doc_type = doc.doc_type or req.doc_type
     _record_event(session, case_id, uploaded_by, "document.uploaded", "document", doc.id,
-                  {"label": safe_name, "doc_type": doc_type})
+                  {"label": safe_name, "doc_type": doc_type, "request_id": request_id})
     await session.commit()
     return DocumentOut(id=doc.id, filename=doc.filename, doc_type=doc.doc_type,
                        status=doc.status, created_at=doc.created_at)
@@ -1297,3 +1361,355 @@ async def get_rule(rule_id: str):
         summary=rule.summary.strip(),
         markdown=explainer.read_text() if explainer.exists() else None,
     )
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp journey: intake bot, initial scan, activation, document requests,
+# profile changes proposed in chat
+# ---------------------------------------------------------------------------
+
+def _current_conversation(convos: list[Conversation]) -> Conversation | None:
+    """The thread for the customer's journey; legacy unstaged threads only as a fallback."""
+    staged = [c for c in convos if c.stage]
+    pool = staged or convos
+    return max(pool, key=lambda c: c.id) if pool else None
+
+
+def _bot_message(conv_id: int, bm: "intake.BotMessage") -> Message:
+    return Message(
+        conversation_id=conv_id, role="assistant", content=bm.content, author="Kiyos",
+        options=bm.options, action=bm.action, confidence=1.0, created_at=_now(),
+    )
+
+
+async def _intake_turn(session: AsyncSession, convo: Conversation, case: Case, text: str) -> "SendResult":
+    safe_text, guard = converse.guard_sensitive(text)
+    user_msg = Message(conversation_id=convo.id, role="user", content=safe_text, created_at=_now())
+    session.add(user_msg)
+    await session.flush()
+    created: list[Message] = [user_msg]
+
+    if guard is not None:
+        replies = [intake.BotMessage(content=guard.content, action=guard.action)]
+    else:
+        state, result = intake.advance(convo.intake, safe_text)
+        convo.intake = state
+        replies = result.messages
+        if result.scan:
+            scan = result.scan
+            session.add(InitialScan(
+                case_id=case.id, version=scan["version"], answers=state["answers"], rows=scan["rows"],
+                missing=scan["missing"], confidence=scan["confidence"], household=scan["household"],
+                created_at=_now(),
+            ))
+            _record_event(session, case.id, "agent", "scan.completed", "case", case.id,
+                          {"label": f"{len(scan['rows'])} areas, confidence {scan['confidence']}"})
+        if result.consent_saved is not None:
+            latest = (await session.execute(
+                select(InitialScan).where(InitialScan.case_id == case.id).order_by(InitialScan.id.desc())
+            )).scalars().first()
+            if latest:
+                latest.consent_saved = result.consent_saved
+            _record_event(session, case.id, "customer",
+                          "scan.saved" if result.consent_saved else "scan.not_saved", "case", case.id)
+        if result.name:
+            case.client_name = result.name
+            case.name = f"{result.name} — initial scan"
+        if result.finished:
+            convo.stage = "free"
+            case.plan = "free"
+
+    for bm in replies:
+        m = _bot_message(convo.id, bm)
+        session.add(m)
+        created.append(m)
+    await session.flush()
+    await session.commit()
+    state_out = await _conversation_state(session, convo)
+    return SendResult(messages=[MessageOut.of(m) for m in created], conversation=state_out)
+
+
+class DemoJourneyOut(BaseModel):
+    case_id: int
+    conversation_id: int
+
+
+@app.post("/demo/journeys", response_model=DemoJourneyOut)
+async def start_demo_journey(session: AsyncSession = Depends(get_session)):
+    """Prototype only: a new prospect messaging Kiyos on WhatsApp for the first time.
+    A minimal case is created up front so the scan can be saved (PRD §5: minimal case)."""
+    case = Case(
+        name="New WhatsApp enquiry", client_name="New customer", status="lead",
+        jurisdictions="IN,US", case_captain="Unassigned", plan="free", created_at=_now(),
+        phone=f"+1 650 555 {random.randint(1000, 9999)}",
+    )
+    session.add(case)
+    await session.flush()
+    convo = Conversation(case_id=case.id, title="WhatsApp", stage="intake",
+                         intake={"step": "question", "answers": {}}, created_at=_now())
+    session.add(convo)
+    await session.flush()
+    for bm in intake.opening_messages():
+        session.add(_bot_message(convo.id, bm))
+    await session.commit()
+    return DemoJourneyOut(case_id=case.id, conversation_id=convo.id)
+
+
+class SignInIn(BaseModel):
+    code: str
+
+
+@app.post("/cases/{case_id}/sign-in", response_model=CaseDetail)
+async def sign_in(case_id: int, body: SignInIn, session: AsyncSession = Depends(get_session)):
+    """Workspace sign-in with the WhatsApp number and a one-time code (PRD §7). The first
+    sign-in turns the lead into a customer account. Prototype: any six digits pass."""
+    case = await session.get(Case, case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if not re.fullmatch(r"\d{6}", body.code.strip()):
+        raise HTTPException(status_code=422, detail="Enter the six-digit code")
+    if case.status == "lead":
+        case.status = "active"
+        _record_event(session, case_id, case.client_name, "workspace.signed_in", "case", case_id,
+                      {"label": "First sign-in with WhatsApp number"})
+    await session.commit()
+    return await get_case(case_id, session)
+
+
+class InitialScanOut(BaseModel):
+    id: int
+    version: str
+    answers: dict
+    rows: list[dict]
+    missing: list[str]
+    confidence: str
+    household: str
+    consent_saved: bool
+    price_low_inr: int
+    price_high_inr: int
+    created_at: datetime
+
+
+@app.get("/cases/{case_id}/initial-scan", response_model=Optional[InitialScanOut])
+async def get_initial_scan(case_id: int, session: AsyncSession = Depends(get_session)):
+    scan = (await session.execute(
+        select(InitialScan).where(InitialScan.case_id == case_id).order_by(InitialScan.id.desc())
+    )).scalars().first()
+    if not scan:
+        return None
+    low, high = intake.price_band(scan.household)
+    return InitialScanOut(
+        id=scan.id, version=scan.version, answers=scan.answers, rows=scan.rows, missing=scan.missing,
+        confidence=scan.confidence, household=scan.household, consent_saved=scan.consent_saved,
+        price_low_inr=low, price_high_inr=high, created_at=scan.created_at,
+    )
+
+
+@app.get("/plans")
+async def list_plans() -> dict:
+    """Provisional GST-inclusive placeholders from PRD §10 — the same matrix the bot sends."""
+    return {"provisional": True, "plans": intake.plans()}
+
+
+class ActivateIn(BaseModel):
+    offering: Literal["advisory", "full"]
+    household: Literal["individual", "couple"]
+    payment_method: Literal["upi", "card", "netbanking"]
+    scope_confirmed: bool
+    nda_accepted: bool
+    consent: bool
+
+
+DEFAULT_LEAD = "Sidhant Srivastava"
+DEFAULT_REVIEWERS = [
+    {"name": "Sidhant Srivastava", "role": "Lead tax expert", "country": "BOTH", "qualification": "Cross-border tax specialist"},
+    {"name": "Meera Iyer", "role": "India reviewer", "country": "IN", "qualification": "Chartered Accountant"},
+    {"name": "Daniel Brooks", "role": "US reviewer", "country": "US", "qualification": "Enrolled Agent"},
+]
+
+
+@app.post("/cases/{case_id}/activate", response_model=CaseDetail)
+async def activate_plan(case_id: int, body: ActivateIn, session: AsyncSession = Depends(get_session)):
+    """Explicit plan pick, scope recap, payment, NDA and consent — then the paid onboarding
+    package fires automatically (PRD §5 stage 5, scenario 'Onboarding package on payment')."""
+    case = (await session.execute(
+        select(Case).where(Case.id == case_id).options(selectinload(Case.conversations))
+    )).scalars().first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if case.plan == "premium" and case.activated_at:
+        raise HTTPException(status_code=409, detail="This case already has an active plan")
+    if not (body.scope_confirmed and body.nda_accepted and body.consent):
+        raise HTTPException(status_code=422, detail="Confirm the scope, NDA and consent to continue")
+
+    plan = next(p for p in intake.plans() if p["key"] == body.offering)
+    price = plan[f"{body.household}_inr"]
+    now = _now()
+    case.plan = "premium"
+    case.status = "active"
+    case.activated_at = now
+    case.plan_choice = {
+        "offering": body.offering, "name": plan["name"], "household": body.household,
+        "price_inr": price, "price_usd": plan[f"{body.household}_usd"], "gst_included": True,
+        "payment_method": body.payment_method, "receipt": f"KY-{case_id:04d}-{now:%y%m%d}",
+        "nda_accepted_at": now.isoformat(), "consent_at": now.isoformat(),
+    }
+    if case.case_captain in (None, "", "demo", "Unassigned"):
+        case.case_captain = DEFAULT_LEAD
+    case.reviewers = case.reviewers or [
+        {**r, "name": case.case_captain} if r["role"] == "Lead tax expert" else r for r in DEFAULT_REVIEWERS
+    ]
+    case.name = f"{case.client_name} — {plan['name'].lower()} 2026-27"
+
+    scan = (await session.execute(
+        select(InitialScan).where(InitialScan.case_id == case_id).order_by(InitialScan.id.desc())
+    )).scalars().first()
+    areas = {r["area"] for r in (scan.rows if scan else [])}
+    catalogue = intake.load_scan().get("requests", {})
+    specs = list(catalogue.get("always", [])) + [s for a in areas for s in catalogue.get(a, [])]
+    requests = []
+    for spec in specs:
+        req = DocumentRequest(case_id=case_id, title=spec["title"], why=spec["why"],
+                              country=spec.get("country"), doc_type=spec.get("doc_type"), created_at=now)
+        session.add(req)
+        requests.append(req)
+    await session.flush()
+
+    convo = _current_conversation(case.conversations)
+    if convo:
+        convo.stage = "paid"
+        lead = case.case_captain
+        for bm in [
+            intake.BotMessage(
+                content=(
+                    f"Payment received — {plan['name']}, {body.household}, {intake.inr(price)} incl. GST. "
+                    "Your receipt, signed NDA and scope are in your workspace."
+                ),
+                action={"type": "overview", "label": "Open my workspace", "href": "/portal/dashboard"},
+            ),
+            intake.BotMessage(
+                content=(
+                    f"{lead} is your tax expert and owns your case end to end — both the India "
+                    "and US sides. Any question that needs expert input gets a reply within one "
+                    "business day."
+                ),
+            ),
+        ] + ([
+            intake.BotMessage(
+                content=(
+                    f"First, {len(requests)} documents. Each one has its own secure upload link — "
+                    f"please don't send files here. Start with: {requests[0].title.lower()}."
+                ),
+                action={"type": "upload", "label": "Upload documents", "href": f"/portal/documents?request={requests[0].id}"},
+            )
+        ] if requests else []):
+            session.add(_bot_message(convo.id, bm))
+
+    _record_event(session, case_id, case.client_name, "plan.activated", "case", case_id,
+                  {"label": f"{plan['name']} · {body.household} · {intake.inr(price)}"})
+    await session.commit()
+    return await get_case(case_id, session)
+
+
+class DocumentRequestOut(BaseModel):
+    id: int
+    title: str
+    why: str
+    country: Optional[str] = None
+    doc_type: Optional[str] = None
+    status: str
+    rejection_reason: Optional[str] = None
+    document_id: Optional[int] = None
+    filename: Optional[str] = None
+    due_date: Optional[str] = None
+
+
+@app.get("/cases/{case_id}/document-requests", response_model=list[DocumentRequestOut])
+async def list_document_requests(case_id: int, session: AsyncSession = Depends(get_session)):
+    rows = (await session.execute(
+        select(DocumentRequest, Document.filename)
+        .outerjoin(Document, Document.id == DocumentRequest.document_id)
+        .where(DocumentRequest.case_id == case_id)
+        .order_by(DocumentRequest.id)
+    )).all()
+    return [
+        DocumentRequestOut(
+            id=r.id, title=r.title, why=r.why, country=r.country, doc_type=r.doc_type,
+            status=r.status, rejection_reason=r.rejection_reason, document_id=r.document_id,
+            filename=filename, due_date=r.due_date,
+        )
+        for r, filename in rows
+    ]
+
+
+class ProfileChangeOut(BaseModel):
+    id: int
+    fact_id: Optional[int] = None
+    fact_key: str
+    previous_value: Optional[str] = None
+    proposed_value: str
+    source: str
+    quote: Optional[str] = None
+    affects: Optional[str] = None
+    status: str
+    decided_at: Optional[datetime] = None
+    created_at: datetime
+
+
+def _change_out(c: ProfileChange) -> ProfileChangeOut:
+    return ProfileChangeOut(
+        id=c.id, fact_id=c.fact_id, fact_key=c.fact_key, previous_value=c.previous_value,
+        proposed_value=c.proposed_value, source=c.source, quote=c.quote, affects=c.affects,
+        status=c.status, decided_at=c.decided_at, created_at=c.created_at,
+    )
+
+
+@app.get("/cases/{case_id}/profile-changes", response_model=list[ProfileChangeOut])
+async def list_profile_changes(case_id: int, session: AsyncSession = Depends(get_session)):
+    rows = (await session.execute(
+        select(ProfileChange).where(ProfileChange.case_id == case_id).order_by(ProfileChange.id.desc())
+    )).scalars().all()
+    return [_change_out(c) for c in rows]
+
+
+class DecideIn(BaseModel):
+    decision: Literal["confirm", "reject"]
+    by: str
+
+
+@app.post("/profile-changes/{change_id}/decide", response_model=ProfileChangeOut)
+async def decide_profile_change(change_id: int, body: DecideIn, session: AsyncSession = Depends(get_session)):
+    change = await session.get(ProfileChange, change_id)
+    if not change:
+        raise HTTPException(status_code=404, detail="Change not found")
+    if change.status != "proposed":
+        raise HTTPException(status_code=409, detail=f"Already {change.status}")
+    change.status = "confirmed" if body.decision == "confirm" else "rejected"
+    change.decided_at = _now()
+    case = (await session.execute(
+        select(Case).where(Case.id == change.case_id).options(selectinload(Case.conversations))
+    )).scalars().first()
+    if change.status == "confirmed" and change.fact_id:
+        fact = await session.get(Fact, change.fact_id)
+        if fact:
+            change.previous_value = fact.value
+            fact.value = change.proposed_value
+            fact.source = "customer_confirmed"
+            fact.as_of = _now().date().isoformat()
+    _record_event(
+        session, change.case_id, body.by,
+        "profile.change_confirmed" if change.status == "confirmed" else "profile.change_rejected",
+        "profile_change", change.id,
+        {"label": change.fact_key, "from": change.previous_value, "to": change.proposed_value},
+    )
+    convo = _current_conversation(case.conversations) if case else None
+    if convo:
+        text = (
+            f"Thanks — that's confirmed and saved to your profile. {case.case_captain} will check "
+            "whether it changes anything in your plan and let you know here."
+            if change.status == "confirmed"
+            else "Got it — I've left your profile as it was."
+        )
+        session.add(_bot_message(convo.id, intake.BotMessage(content=text)))
+    await session.commit()
+    return _change_out(change)

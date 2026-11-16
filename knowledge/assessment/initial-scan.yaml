@@ -1,0 +1,177 @@
+# Free five-minute assessment (PRD §5 stage 2, §7 P0 "Bot onboarding" / "Free assessment").
+#
+# DRAFT — product scaffolding written by the build team, NOT reviewed tax content.
+# Hena/Sidhant must review the questions, findings and wording before any real
+# customer sees this. Findings name likely workstreams only; they are never a
+# personal tax position (PRD §10: "Do not imply the free scan is a final personal
+# tax opinion"). Prices are the 6 Nov 2026 provisional placeholders.
+#
+# No `id` key on purpose: engine/rules.py only loads tax rules that have one.
+
+scan_id: KIYOS-INITIAL-SCAN
+version: "2026.11-draft"
+status: draft
+
+steps:
+  - key: need
+    ask: "What would you like help with? Pick the closest — 'Not sure' is fine."
+    options: ["Moving back to India", "NRI with ties in India", "US person in India", "Equity or money event", "Not sure"]
+    missing_if_unsure: "What you need help with — we'll work it out together"
+  - key: move_timing
+    ask_if: { need: ["Moving back to India"] }
+    ask: "When is the move?"
+    why: "The move date decides which year has income taxed in both countries."
+    options: ["Already moved this year", "In the next 6 months", "Later or undecided", "Not sure"]
+    missing_if_unsure: "Your move date"
+  - key: years_abroad
+    ask: "Roughly how long have you lived outside India?"
+    why: "This decides whether India can treat you as RNOR for your first years back."
+    options: ["Under 2 years", "2 to 9 years", "10 years or more", "Not sure"]
+    missing_if_unsure: "How long you've lived outside India"
+  - key: retirement
+    ask: "Do you have a 401(k) or IRA?"
+    options: ["Yes", "No", "Not sure"]
+    missing_if_unsure: "Whether you hold US retirement accounts"
+  - key: equity
+    ask: "Any US brokerage account, RSUs or stock options?"
+    options: ["Yes", "No", "Not sure"]
+    missing_if_unsure: "Whether you hold US investments or equity awards"
+  - key: india_funds
+    ask: "Do you hold Indian mutual funds?"
+    options: ["Yes", "No", "Not sure"]
+    missing_if_unsure: "Whether you hold Indian mutual funds"
+  - key: india_property
+    ask: "Do you own property in India or earn rent there?"
+    options: ["Yes", "No", "Not sure"]
+    missing_if_unsure: "Whether you have Indian property or rental income"
+  - key: household
+    ask: "Last one — will you file on your own or with a spouse?"
+    why: "It only changes the price band, not the risks."
+    options: ["Just me", "With my spouse", "Not sure"]
+
+findings:
+  - when: { need: ["Moving back to India"], years_abroad: ["10 years or more"] }
+    area: Residency
+    country: IN
+    finding: You may qualify as RNOR for your first years back
+    why: While RNOR, most income earned outside India usually stays out of Indian tax.
+    input: years_abroad
+    confidence: likely
+    rule: IN-RES-RNOR-9OF10
+  - when: { need: ["Moving back to India"], years_abroad: ["2 to 9 years", "Not sure"] }
+    area: Residency
+    country: IN
+    finding: RNOR status depends on your last ten years abroad
+    why: It decides whether India taxes your US income from the year you return.
+    input: years_abroad
+    confidence: incomplete
+    rule: IN-RES-RNOR-9OF10
+  - when: { need: ["Moving back to India"], move_timing: ["Already moved this year", "In the next 6 months"] }
+    area: Move year
+    country: US
+    finding: Your move year is likely split between two tax systems
+    why: The US year can be part-resident, part-non-resident, with credits between the two countries.
+    input: move_timing
+    confidence: likely
+  - when: { retirement: ["Yes"] }
+    area: Retirement accounts
+    country: BOTH
+    finding: Your 401(k)/IRA needs a plan for Indian tax and Form 10-EE
+    why: Timing of withdrawals and the 10-EE election can avoid paying tax twice.
+    input: retirement
+    confidence: likely
+  - when: { equity: ["Yes"] }
+    area: Investments & equity
+    country: BOTH
+    finding: Gains and RSU income may need splitting across both countries
+    why: Each country taxes part of the same income; credits stop double tax.
+    input: equity
+    confidence: likely
+  - when: { india_funds: ["Yes"], need: ["Moving back to India", "NRI with ties in India", "US person in India"] }
+    area: Indian mutual funds
+    country: US
+    finding: Indian mutual funds can trigger US PFIC reporting
+    why: PFIC rules can tax fund gains harshly unless reported correctly.
+    input: india_funds
+    confidence: likely
+    priced_separately: true
+  - when: { india_property: ["Yes"] }
+    area: Indian property
+    country: BOTH
+    finding: Rent or a sale in India is taxed in India and reported in the US
+    why: India taxes it first; the US usually gives a credit if it's reported.
+    input: india_property
+    confidence: likely
+    priced_separately: true
+  - when: { need: ["NRI with ties in India", "US person in India", "Moving back to India"] }
+    area: Foreign accounts
+    country: US
+    finding: Indian bank and investment accounts may need FBAR/FATCA reporting
+    why: Missed account reports carry penalties even when no tax is owed.
+    input: need
+    confidence: likely
+  - when: { need: ["US person in India"] }
+    area: US filing
+    country: US
+    finding: You keep filing US returns while living in India
+    why: US citizens and green-card holders file on worldwide income wherever they live.
+    input: need
+    confidence: likely
+  - when: { need: ["Equity or money event", "Not sure"] }
+    area: Your situation
+    country: BOTH
+    finding: We need a few more details to map this properly
+    why: An expert scopes events like a sale, vest or inheritance before any position.
+    input: need
+    confidence: incomplete
+
+# PRD §10, decision 6 Nov 2026 — provisional placeholders, GST-inclusive.
+plans:
+  - key: advisory
+    name: Advisory only
+    summary: Analysis and planning; your existing CA/CPA files
+    individual_inr: 29500
+    individual_usd: 314
+    couple_inr: 35400
+    couple_usd: 377
+  - key: full
+    name: Full service
+    summary: Planning, India and US filing, ongoing advisory
+    individual_inr: 47200
+    individual_usd: 502
+    couple_inr: 59000
+    couple_usd: 628
+
+# First document requests raised when a plan is activated, keyed by risk-map area.
+# Each says why it is needed (PRD §2 "Explain every ask").
+requests:
+  always:
+    - title: Last year's tax returns
+      why: So we start from what you've already filed in each country, not from scratch.
+      country: BOTH
+      doc_type: prior_returns
+  Residency:
+    - title: Travel history (passport stamps or travel log)
+      why: Your days in India each year decide your residency status.
+      country: IN
+      doc_type: travel_history
+  Retirement accounts:
+    - title: 401(k) / IRA year-end statement
+      why: Balances and contributions let us plan withdrawals and Form 10-EE timing.
+      country: US
+      doc_type: 401k_statement
+  Investments & equity:
+    - title: Brokerage 1099-B and equity award statements
+      why: Shows what you sold and what vested, so gains are split correctly between the countries.
+      country: US
+      doc_type: brokerage_statement
+  Indian mutual funds:
+    - title: Indian mutual fund statement (CAS)
+      why: Lets us check which funds need US PFIC reporting before quoting that work.
+      country: IN
+      doc_type: mf_cas
+  Indian property:
+    - title: Rent agreement or property papers
+      why: Confirms the rent or sale India will tax first, so the US credit matches.
+      country: IN
+      doc_type: rental_agreement

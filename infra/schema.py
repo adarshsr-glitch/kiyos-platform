@@ -65,6 +65,16 @@ class Case(Base):
     tax_year: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     # M2.4 entitlement: "free" (generic Q&A only, capped) | "premium" (case Q&A + advisor)
     plan: Mapped[str] = mapped_column(String(20), default="premium")
+    # Chosen paid offering at activation: {offering, household, price_inr, ...}
+    plan_choice: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    activated_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)
+    # Reviewed per-country position shown on the overview:
+    # {"IN": {status, detail, year, filing, due, state}, "US": {...}}
+    country_status: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # Named India/US reviewers shown to the customer (PRD §9)
+    reviewers: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    # WhatsApp number: the customer's identity, reused for workspace sign-in (PRD §7)
+    phone: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     # M4 verify-and-confirm: set when the customer confirms the pre-filled profile
     profile_confirmed_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
@@ -141,6 +151,10 @@ class Conversation(Base):
     # M1.9 / M5.6 human handover: "agent" answers by default; "advisor" while taken over
     controller: Mapped[str] = mapped_column(String(20), default="agent")
     controller_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # WhatsApp journey stage this thread belongs to: intake | free | paid (null = legacy)
+    stage: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # Intake bot state: {"step": str, "answers": {...}}
+    intake: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
 
     case: Mapped["Case"] = relationship(back_populates="conversations")
@@ -164,6 +178,8 @@ class Message(Base):
     category: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     # Contextual call-to-action rendered under an agent message: {type, label, href}
     action: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # WhatsApp quick-reply buttons offered with an agent message
+    options: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
 
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
@@ -357,4 +373,63 @@ class CaseEvent(Base):
     target_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     target_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     detail: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+
+
+class InitialScan(Base):
+    """The free five-minute assessment (PRD §5 stage 2): a bounded risk map built from
+    the customer's answers. Not a personal tax opinion; not counted toward free Q&A."""
+
+    __tablename__ = "initial_scan"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("case.id"))
+    version: Mapped[str] = mapped_column(String(50))
+    answers: Mapped[dict] = mapped_column(JSON)
+    # [{area, country, finding, why, input, confidence, rule}]
+    rows: Mapped[list] = mapped_column(JSON)
+    missing: Mapped[list] = mapped_column(JSON)
+    confidence: Mapped[str] = mapped_column(String(20))
+    household: Mapped[str] = mapped_column(String(20), default="individual")
+    consent_saved: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+
+
+class DocumentRequest(Base):
+    """One item the case needs, with why — the target of a per-item upload link."""
+
+    __tablename__ = "document_request"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("case.id"))
+    title: Mapped[str] = mapped_column(String(255))
+    why: Mapped[str] = mapped_column(Text)
+    country: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
+    doc_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    # pending | received | reviewed | rejected
+    rejection_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    document_id: Mapped[Optional[int]] = mapped_column(ForeignKey("document.id"), nullable=True)
+    due_date: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+
+
+class ProfileChange(Base):
+    """A fact change suggested in conversation, held until the customer confirms it in
+    the workspace (PRD §6 fact design, §8 deep links). Confirmed changes keep history."""
+
+    __tablename__ = "profile_change"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("case.id"))
+    fact_id: Mapped[Optional[int]] = mapped_column(ForeignKey("fact.id"), nullable=True)
+    fact_key: Mapped[str] = mapped_column(String(255))
+    previous_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    proposed_value: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(50), default="whatsapp")
+    quote: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # what the customer said
+    affects: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # why it matters
+    status: Mapped[str] = mapped_column(String(20), default="proposed")
+    # proposed | confirmed | rejected
+    decided_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)

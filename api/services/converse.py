@@ -32,11 +32,9 @@ from services._ai import ai_call, ai_enabled, find_pii, log_fallback_call, scrub
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.7"))
 
 # Free plan (PRD §7 Free Q&A, decision 10 Nov 2026): three generic questions in total
-# per person; personal questions pivot to a paid offering from the first question.
-# FREE_MESSAGE_LIMIT caps all free back-and-forth, generic or not.
-FREE_GENERIC_LIMIT = int(os.getenv("FREE_GENERIC_LIMIT", "3"))
-FREE_MESSAGE_LIMIT = int(os.getenv("FREE_MESSAGE_LIMIT", "10"))
-FREE_CATEGORIES = ("generic", "generic_unanswered", "generic_over_limit", "personal")
+# per person; personal questions pivot to a paid offering from the first question,
+# whatever the count. The five-minute assessment is separate and never counted.
+FREE_GENERIC_LIMIT = 3
 
 PLANS_ACTION = {"type": "plans", "label": "See plans", "href": "/portal/upgrade"}
 UPLOAD_ACTION = {"type": "upload", "label": "Open secure upload", "href": "/portal/documents"}
@@ -98,13 +96,16 @@ def classify_free_question(text: str) -> str:
 
 
 def free_usage(categories: list[str | None]) -> dict[str, int]:
-    used = [c for c in categories if c in FREE_CATEGORIES]
     return {
-        "generic_used": sum(1 for c in used if c == "generic"),
+        "generic_used": sum(1 for c in categories if c == "generic"),
         "generic_limit": FREE_GENERIC_LIMIT,
-        "messages_used": len(used),
-        "messages_limit": FREE_MESSAGE_LIMIT,
     }
+
+
+def _offerings_line() -> str:
+    from services.intake import inr, plans
+
+    return " or ".join(f"{p['name']} from {inr(p['individual_inr'])}" for p in plans())
 
 
 async def answer_free(
@@ -114,9 +115,10 @@ async def answer_free(
     if classify_free_question(question) == "personal":
         return Reply(
             content=(
-                "That depends on your own situation, so it needs your full case — I can't "
-                "answer it on the free plan without guessing. With a paid plan, Kiyos works "
-                "it out from your documents and a named tax advisor reviews the answer."
+                "That one is about your own situation, so I can't answer it on the free plan — "
+                "even partly. On a paid plan, a Kiyos tax expert checks it against your own "
+                "details (dates, accounts, documents) and you get a reviewed answer, usually "
+                f"within one business day. Plans: {_offerings_line()}, incl. GST."
             ),
             confidence=1.0,
             reason="personal_question_pivot",
@@ -126,9 +128,9 @@ async def answer_free(
     if usage["generic_used"] >= FREE_GENERIC_LIMIT:
         return Reply(
             content=(
-                f"You've used your {FREE_GENERIC_LIMIT} free questions. A paid plan gives you "
-                "unlimited questions about your case, answered from your documents and "
-                "reviewed by your advisor."
+                f"You've used your {FREE_GENERIC_LIMIT} free general questions. To keep going, "
+                f"choose a plan — {_offerings_line()}, incl. GST — and ask about your own "
+                "situation as well, with a named expert reviewing the answers."
             ),
             confidence=1.0,
             reason="free_generic_limit",
@@ -161,9 +163,15 @@ async def answer_free(
 
     remaining = FREE_GENERIC_LIMIT - usage["generic_used"] - 1
     reply.content += (
-        f"\n\nGeneral information only, not advice on your situation. "
-        + (f"{remaining} free question{'s' if remaining != 1 else ''} left." if remaining else "That was your last free question.")
+        "\n\nGeneral information only, not advice on your situation. "
+        + (
+            f"{remaining} free question{'s' if remaining != 1 else ''} left."
+            if remaining
+            else f"That was your last free question. To continue: {_offerings_line()}, incl. GST."
+        )
     )
+    if not remaining:
+        reply.action = PLANS_ACTION
     return reply, "generic"
 
 
