@@ -1,7 +1,7 @@
 import { listCases } from "@/lib/api";
 import { CasesTable } from "./cases-table";
 
-export default async function CasesPage() {
+export default async function CasesPage({ searchParams }: { searchParams: { stage?: string } }) {
   const cases = await listCases();
 
   return (
@@ -15,22 +15,16 @@ export default async function CasesPage() {
       </header>
 
       <div className="flex-1 overflow-auto">
-        <div className="mx-auto max-w-6xl px-6 py-8 space-y-6">
+        <div className="mx-auto max-w-6xl px-6 py-6 space-y-5">
           <section>
-            <p className="text-[11px] uppercase tracking-[0.2em] text-primary mb-2">
-              Case roster
-            </p>
-            <h1 className="font-serif text-3xl font-medium tracking-tight text-foreground leading-tight">
-              Every household,{" "}
-              <span className="font-serif italic text-primary">one view.</span>
-            </h1>
-            <p className="mt-3 text-sm text-muted-foreground max-w-2xl">
-              Search, filter and open any case. Open-item and notice badges show
-              what&apos;s waiting on you at a glance.
+            <h1 className="text-xl font-semibold tracking-tight text-foreground">Cases</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Every customer from their first WhatsApp message. Filter by stage to see who is still in the
+              scan, on the free plan, or waiting on payment.
             </p>
           </section>
 
-          <CasesTable cases={cases} />
+          <CasesTable cases={cases} initialStage={searchParams.stage} />
         </div>
       </div>
     </div>

@@ -17,9 +17,8 @@ import {
   Undo2,
 } from "lucide-react";
 import { toast } from "sonner";
-import type { ConversationState, FreeUsage, Message } from "@/lib/types";
+import type { ConversationState, FreeUsage, Message, Reviewer } from "@/lib/types";
 import {
-  ApiError,
   getConversation,
   handBackConversation,
   sendAdvisorMessage,
@@ -31,6 +30,8 @@ import { cn } from "@/lib/utils";
 import { BookCallDialog } from "@/components/portal/book-call-dialog";
 
 const POLL_MS = 4000;
+/** Compact preview: how many recent messages to show before linking to the full chat. */
+const COMPACT_RECENT = 8;
 const RULE_ID_RE = /\b[A-Z]{2,4}-[A-Z0-9]+(?:-[A-Z0-9]+)+\b/g;
 
 function renderWithRuleChips(text: string): React.ReactNode {
@@ -54,10 +55,43 @@ function renderWithRuleChips(text: string): React.ReactNode {
   return parts.length ? parts : text;
 }
 
+/** WhatsApp formatting: *bold* and _italic_, on top of optional rule-ID chips. */
+function renderWhatsApp(text: string, chips: boolean): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  const re = /\*([^*\n]+)\*|_([^_\n]+)_/g;
+  let last = 0;
+  let match: RegExpExecArray | null;
+  const plain = (t: string, key: string) => (chips ? <span key={key}>{renderWithRuleChips(t)}</span> : t);
+  while ((match = re.exec(text))) {
+    if (match.index > last) out.push(plain(text.slice(last, match.index), `t${last}`));
+    out.push(
+      match[1] !== undefined ? (
+        <strong key={`b${match.index}`} className="font-semibold">{match[1]}</strong>
+      ) : (
+        <em key={`i${match.index}`} className="text-[#54656f]">{match[2]}</em>
+      )
+    );
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) out.push(plain(text.slice(last), `t${last}`));
+  return out;
+}
+
 function isEscalation(m: Message) {
   return (
     m.role === "assistant" &&
     (m.routed || /\bred[- ]tier\b|expert review raised|needs advisor/i.test(m.content))
+  );
+}
+
+/** The last message whose button links to this page (exact link first, then same path). */
+function findAnchor(messages: Message[], href?: string): Message | undefined {
+  if (!href) return undefined;
+  const path = href.split("?")[0];
+  const linked = messages.filter((m) => m.action?.href);
+  return (
+    [...linked].reverse().find((m) => m.action!.href === href) ??
+    [...linked].reverse().find((m) => m.action!.href.split("?")[0] === path)
   );
 }
 
@@ -101,6 +135,11 @@ export function ChatPanel({
   captainName,
   backHref,
   onBack,
+  anchorHref,
+  onState,
+  compact,
+  fullChatHref,
+  team,
   className,
 }: {
   conversationId: number;
@@ -121,6 +160,16 @@ export function ChatPanel({
   backHref?: string;
   /** Shows a back arrow that runs this instead (e.g. closing a drawer). */
   onBack?: () => void;
+  /** Workspace route the customer is on: the message linking to it is highlighted. */
+  anchorHref?: string;
+  /** Called whenever fresh conversation state arrives (e.g. to follow stage changes). */
+  onState?: (state: ConversationState) => void;
+  /** Small preview beside the workspace: tighter type, recent messages only. */
+  compact?: boolean;
+  /** Compact only: where "view full conversation" goes. */
+  fullChatHref?: string;
+  /** Customer view: the case team, to name the expert who has joined the chat. */
+  team?: Reviewer[] | null;
   className?: string;
 }) {
   const advisorView = !portalMode;
@@ -140,8 +189,8 @@ export function ChatPanel({
 
   const applyState = useCallback(
     (state: ConversationState) => {
-      const u = state.usage;
-      const key = `${state.messages.length}:${state.messages.at(-1)?.id}:${state.controller}:${state.plan}:${u?.messages_used}`;
+      onState?.(state);
+      const key = `${state.messages.length}:${state.messages.at(-1)?.id}:${state.controller}:${state.plan}:${state.stage}:${state.usage?.generic_used}`;
       if (key === lastKey.current) return;
       lastKey.current = key;
       setMessages(mergeSynthetic(initialMessages, state.messages));
@@ -149,7 +198,7 @@ export function ChatPanel({
       setPlan(state.plan);
       setUsage(state.usage);
     },
-    [initialMessages]
+    [initialMessages, onState]
   );
 
   // Poll so advisor replies reach the customer and customer questions reach the advisor.
@@ -171,17 +220,32 @@ export function ChatPanel({
     if (advisorView) setReplyMode(controller.who === "advisor" ? "direct" : "via_agent");
   }, [advisorView, controller.who]);
 
+  const anchorId = useMemo(() => findAnchor(messages, anchorHref)?.id, [messages, anchorHref]);
+  const anchoredFor = useRef<string | null>(null);
+  const seenCount = useRef(0);
+
+  // Land on the message that opened this page; after that, follow new messages.
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [messages, sending]);
+    if (!el) return;
+    const grew = messages.length > seenCount.current;
+    seenCount.current = messages.length;
+    if (anchorId !== undefined && anchoredFor.current !== anchorHref) {
+      const node = el.querySelector(`[data-mid="${anchorId}"]`);
+      if (node) {
+        anchoredFor.current = anchorHref ?? null;
+        el.scrollTop = Math.max(0, (node as HTMLElement).offsetTop - el.clientHeight / 3);
+        return;
+      }
+    }
+    if (grew || sending) el.scrollTo({ top: el.scrollHeight, behavior: anchoredFor.current ? "smooth" : "auto" });
+  }, [messages, sending, anchorId, anchorHref]);
 
   const free = !advisorView && plan === "free" && usage !== null;
-  const outOfMessages = free && usage.messages_used >= usage.messages_limit;
 
   const send = useCallback(
     async (text: string) => {
-      if (!text.trim() || sending || outOfMessages) return;
+      if (!text.trim() || sending) return;
 
       const optimistic: Message = {
         id: Date.now(),
@@ -201,20 +265,15 @@ export function ChatPanel({
             : await sendMessage(conversationId, text);
         lastKey.current = "";
         applyState(result.conversation);
-      } catch (e) {
+      } catch {
         setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
-        if (e instanceof ApiError && e.status === 402) {
-          lastKey.current = "";
-          getConversation(conversationId).then(applyState).catch(() => {});
-        } else {
-          toast.error("Message not sent. Check your connection and try again.");
-          setInput(text);
-        }
+        toast.error("Message not sent. Check your connection and try again.");
+        setInput(text);
       } finally {
         setSending(false);
       }
     },
-    [sending, outOfMessages, conversationId, advisorView, advisorName, replyMode, applyState]
+    [sending, conversationId, advisorView, advisorName, replyMode, applyState]
   );
 
   const toggleControl = useCallback(async () => {
@@ -250,13 +309,28 @@ export function ChatPanel({
     });
   }, [messages, advisorView]);
 
+  // Compact preview: recent messages, reaching back far enough to keep the anchored one.
+  const hiddenCount = useMemo(() => {
+    if (!compact) return 0;
+    let from = Math.max(0, rows.length - COMPACT_RECENT);
+    const anchorIndex = rows.findIndex((r) => r.m.id === anchorId);
+    if (anchorIndex >= 0) from = Math.min(from, anchorIndex);
+    return from;
+  }, [compact, rows, anchorId]);
+  const visibleRows = hiddenCount ? rows.slice(hiddenCount) : rows;
+
   const last = messages.at(-1);
   const asked = new Set(messages.filter((m) => m.role === "user").map((m) => m.content.trim()));
-  const quickReplies = (suggestedPrompts ?? []).filter((p) => !asked.has(p));
+  // The bot's own options (e.g. intake questions) win over example questions.
+  const quickReplies =
+    last?.role === "assistant" && last.options?.length
+      ? last.options
+      : free && usage.generic_used >= usage.generic_limit
+        ? []
+        : (suggestedPrompts ?? []).filter((p) => !asked.has(p));
   const showQuickReplies =
     !advisorView &&
     !sending &&
-    !outOfMessages &&
     !advisorInThread &&
     quickReplies.length > 0 &&
     (!last || last.role !== "user");
@@ -268,19 +342,25 @@ export function ChatPanel({
     : sending && !advisorInThread
       ? "typing…"
       : advisorInThread
-        ? `${controller.name} from Kiyos is in this chat`
+        ? expertLine(controller.name, team)
         : "Business account";
 
   return (
     <div
       className={cn(
         "wa flex h-full min-h-0 flex-col overflow-hidden bg-[var(--wa-composer)]",
+        compact && "wa-compact",
         embedded && "rounded-xl border",
         className
       )}
     >
       {/* Header */}
-      <div className="flex h-[56px] shrink-0 items-center gap-2.5 bg-[var(--wa-header)] px-3 text-white">
+      <div
+        className={cn(
+          "flex shrink-0 items-center bg-[var(--wa-header)] text-white",
+          compact ? "h-[46px] gap-2 px-2.5" : "h-[56px] gap-2.5 px-3"
+        )}
+      >
         {backHref ? (
           <Link href={backHref} aria-label="Back" className="-ml-1 rounded-full p-1 hover:bg-white/10">
             <ArrowLeft className="h-5 w-5" />
@@ -294,7 +374,8 @@ export function ChatPanel({
         )}
         <div
           className={cn(
-            "flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[13px] font-semibold",
+            "flex shrink-0 items-center justify-center rounded-full font-semibold",
+            compact ? "h-7 w-7 text-[11px]" : "h-9 w-9 text-[13px]",
             advisorView ? "bg-[#dfe5e7] text-[#54656f]" : "bg-white text-[var(--wa-header)]"
           )}
         >
@@ -303,11 +384,11 @@ export function ChatPanel({
           )}
         </div>
         <div className="min-w-0 flex-1 leading-tight">
-          <p className="flex items-center gap-1 truncate text-[15px] font-medium">
+          <p className={cn("flex items-center gap-1 truncate font-medium", compact ? "text-[13.5px]" : "text-[15px]")}>
             {advisorView ? caseClientName ?? "Customer" : "Kiyos"}
             {!advisorView && <BadgeCheck className="h-4 w-4 shrink-0 fill-[#25d366] text-[var(--wa-header)]" />}
           </p>
-          <p className="truncate text-[12px] text-white/80">{subtitle}</p>
+          <p className={cn("truncate text-white/80", compact ? "text-[11px]" : "text-[12px]")}>{subtitle}</p>
         </div>
         {advisorView && advisorName ? (
           <button
@@ -336,10 +417,16 @@ export function ChatPanel({
 
       {/* Free-plan allowance, pinned like a WhatsApp pinned message */}
       {free && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-black/5 bg-white px-3 py-1.5 text-[12.5px] text-[#54656f]">
+        <div
+          className={cn(
+            "flex shrink-0 items-center gap-2 border-b border-black/5 bg-white text-[#54656f]",
+            compact ? "px-2.5 py-1 text-[11px]" : "px-3 py-1.5 text-[12.5px]"
+          )}
+        >
           <span className="font-medium text-[var(--wa-text)]">Free plan</span>
-          <span className="tabular-nums">
-            {Math.max(usage.generic_limit - usage.generic_used, 0)} of {usage.generic_limit} general questions left
+          <span className="truncate tabular-nums">
+            {Math.max(usage.generic_limit - usage.generic_used, 0)} of {usage.generic_limit}
+            {compact ? " free questions" : " general questions left"}
           </span>
           <Link href="/portal/upgrade" className="ml-auto shrink-0 font-medium text-[var(--wa-header)] hover:underline">
             See plans
@@ -348,22 +435,47 @@ export function ChatPanel({
       )}
 
       {/* Thread */}
-      <div ref={scrollRef} className="wa-wallpaper min-h-0 flex-1 overflow-y-auto px-[5%] py-3 sm:px-6">
-        <div className="mx-auto mb-3 max-w-[90%] rounded-lg bg-[var(--wa-notice)] px-3 py-1.5 text-center text-[12px] leading-snug text-[#54656f] shadow-sm">
-          <Lock className="mr-1 inline h-3 w-3 -translate-y-px" />
-          {advisorView
-            ? "Customer's WhatsApp thread. Kiyos answers within its confidence limits; anything else routes to the captain."
-            : "Answers come from Kiyos's reviewed tax rules. Anything specific to you is checked by your advisor. Never share ID numbers or documents here."}
-        </div>
+      <div
+        ref={scrollRef}
+        className={cn("wa-wallpaper min-h-0 flex-1 overflow-y-auto", compact ? "px-2.5 py-2" : "px-[5%] py-3 sm:px-6")}
+      >
+        {hiddenCount > 0 && fullChatHref ? (
+          <Link
+            href={fullChatHref}
+            className="mx-auto mb-2 block w-fit rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-medium text-[var(--wa-link)] shadow-sm hover:bg-white"
+          >
+            {hiddenCount} earlier message{hiddenCount > 1 ? "s" : ""} · View full conversation
+          </Link>
+        ) : (
+          <div
+            className={cn(
+              "mx-auto mb-3 max-w-[90%] rounded-lg bg-[var(--wa-notice)] text-center leading-snug text-[#54656f] shadow-sm",
+              compact ? "px-2 py-1 text-[10.5px]" : "px-3 py-1.5 text-[12px]"
+            )}
+          >
+            <Lock className="mr-1 inline h-3 w-3 -translate-y-px" />
+            {advisorView
+              ? "Customer's WhatsApp thread. Kiyos answers within its confidence limits; anything else becomes a ticket for the lead expert."
+              : compact
+                ? "Never share ID numbers or documents here."
+                : "Answers come from Kiyos's reviewed tax rules. Anything specific to you is checked by your expert. Never share ID numbers or documents here."}
+          </div>
+        )}
 
-        {rows.map(({ m, outgoing, first, newDay, day }) => (
+        {visibleRows.map(({ m, outgoing, first, newDay, day }) => (
           <Fragment key={m.id}>
             {newDay && (
               <div className="my-2 flex justify-center">
                 <span className="rounded-md bg-white px-2.5 py-1 text-[12px] text-[#54656f] shadow-sm">{day}</span>
               </div>
             )}
-            <Bubble m={m} outgoing={outgoing} first={first} advisorView={advisorView} />
+            <Bubble
+              m={m}
+              outgoing={outgoing}
+              first={first}
+              advisorView={advisorView}
+              anchored={m.id === anchorId}
+            />
           </Fragment>
         ))}
 
@@ -387,7 +499,10 @@ export function ChatPanel({
               <button
                 key={p}
                 onClick={() => send(p)}
-                className="wa-bubble rounded-lg bg-[var(--wa-in)] px-3 py-2 text-center text-[14px] text-[var(--wa-link)] hover:bg-[#f5f6f6]"
+                className={cn(
+                  "wa-bubble rounded-lg bg-[var(--wa-in)] text-center text-[var(--wa-link)] hover:bg-[#f5f6f6]",
+                  compact ? "px-2.5 py-1.5 text-[12.5px]" : "px-3 py-2 text-[14px]"
+                )}
               >
                 {p}
               </button>
@@ -422,57 +537,51 @@ export function ChatPanel({
         </div>
       )}
 
-      {outOfMessages ? (
-        <div className="flex shrink-0 flex-col items-center gap-2 px-4 py-3 text-center text-[13px] text-[#54656f]">
-          <p>You&apos;ve reached the free chat limit. Choose a plan to keep the conversation going with your own advisor.</p>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          send(input);
+        }}
+        className={cn("flex shrink-0 items-center", compact ? "gap-1.5 px-2 py-1.5" : "gap-2 px-2.5 py-2")}
+      >
+        {!advisorView && (
           <Link
-            href="/portal/upgrade"
-            className="rounded-full bg-[var(--wa-send)] px-4 py-1.5 text-[13px] font-medium text-white hover:brightness-95"
+            href="/portal/documents"
+            aria-label="Upload documents securely"
+            title="Documents go to your secure workspace, not the chat"
+            className={cn("rounded-full text-[#54656f] hover:bg-black/5", compact ? "p-1" : "p-2")}
           >
-            See plans
+            <Paperclip className={compact ? "h-4 w-4" : "h-5 w-5"} />
           </Link>
-        </div>
-      ) : (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            send(input);
-          }}
-          className="flex shrink-0 items-center gap-2 px-2.5 py-2"
-        >
-          {!advisorView && (
-            <Link
-              href="/portal/documents"
-              aria-label="Upload documents securely"
-              title="Documents go to your secure workspace, not the chat"
-              className="rounded-full p-2 text-[#54656f] hover:bg-black/5"
-            >
-              <Paperclip className="h-5 w-5" />
-            </Link>
+        )}
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder={
+            advisorView
+              ? replyMode === "via_agent"
+                ? "Note for Kiyos to relay"
+                : "Message as yourself"
+              : "Message"
+          }
+          disabled={sending || (advisorView && !advisorName)}
+          className={cn(
+            "min-w-0 flex-1 rounded-lg bg-white text-[var(--wa-text)] placeholder:text-[#8696a0] outline-none",
+            compact ? "h-8 px-2.5 text-[13px]" : "h-10 px-3 text-[15px]"
           )}
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder={
-              advisorView
-                ? replyMode === "via_agent"
-                  ? "Note for Kiyos to relay"
-                  : "Message as yourself"
-                : "Message"
-            }
-            disabled={sending || (advisorView && !advisorName)}
-            className="h-10 min-w-0 flex-1 rounded-lg bg-white px-3 text-[15px] text-[var(--wa-text)] placeholder:text-[#8696a0] outline-none"
-          />
-          <button
-            type="submit"
-            disabled={sending || !input.trim()}
-            aria-label="Send"
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--wa-send)] text-white transition-opacity disabled:opacity-60"
-          >
-            <SendHorizontal className="h-[18px] w-[18px]" />
-          </button>
-        </form>
-      )}
+        />
+        <button
+          type="submit"
+          disabled={sending || !input.trim()}
+          aria-label="Send"
+          className={cn(
+            "flex shrink-0 items-center justify-center rounded-full bg-[var(--wa-send)] text-white transition-opacity disabled:opacity-60",
+            compact ? "h-8 w-8" : "h-10 w-10"
+          )}
+        >
+          <SendHorizontal className={compact ? "h-4 w-4" : "h-[18px] w-[18px]"} />
+        </button>
+      </form>
 
       {caseId && captainName && caseClientName && (
         <BookCallDialog
@@ -487,16 +596,23 @@ export function ChatPanel({
   );
 }
 
+/** Simple line showing which expert has joined — no confusing qualification codes. */
+function expertLine(name: string | null, _team?: Reviewer[] | null) {
+  return `${name ?? "Your expert"} from Kiyos is in this chat`;
+}
+
 function Bubble({
   m,
   outgoing,
   first,
   advisorView,
+  anchored,
 }: {
   m: Message;
   outgoing: boolean;
   first: boolean;
   advisorView: boolean;
+  anchored?: boolean;
 }) {
   if (m.role === "system") {
     return (
@@ -522,7 +638,10 @@ function Bubble({
           : null;
 
   return (
-    <div className={cn("flex", outgoing ? "justify-end" : "justify-start", first ? "mt-2" : "mt-0.5")}>
+    <div
+      data-mid={m.id}
+      className={cn("flex flex-col", outgoing ? "items-end" : "items-start", first ? "mt-2" : "mt-0.5")}
+    >
       <div className={cn("relative max-w-[85%] sm:max-w-[75%]", first && (outgoing ? "rounded-tr-none" : "rounded-tl-none"))}>
         {first && <Tail outgoing={outgoing} />}
         <div
@@ -546,7 +665,7 @@ function Bubble({
             </p>
           )}
           <div className="whitespace-pre-wrap break-words px-1">
-            {advisorView ? renderWithRuleChips(m.content) : m.content}
+            {renderWhatsApp(m.content, advisorView)}
             {/* Spacer so the timestamp never overlaps the last line */}
             <span className="inline-block w-[64px]" aria-hidden />
           </div>
@@ -566,11 +685,19 @@ function Bubble({
         {m.action && !advisorView && (
           <Link
             href={m.action.href}
-            className="wa-bubble mt-0.5 flex items-center justify-center gap-1.5 rounded-lg bg-[var(--wa-in)] px-3 py-2 text-[14px] text-[var(--wa-link)] hover:bg-[#f5f6f6]"
+            className={cn(
+              "wa-bubble mt-0.5 flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-[14px] text-[var(--wa-link)] transition-colors",
+              anchored ? "bg-[#e7fce3] ring-2 ring-[#25d366]" : "bg-[var(--wa-in)] hover:bg-[#f5f6f6]"
+            )}
           >
             <ArrowUpRight className="h-4 w-4" />
             {m.action.label}
           </Link>
+        )}
+        {anchored && !advisorView && (
+          <p className="mt-1 rounded-full bg-[#1f2c33]/80 px-2 py-0.5 text-[11px] font-medium text-white">
+            You opened this page from here
+          </p>
         )}
         {m.action && advisorView && (
           <p className="mt-0.5 text-right text-[11px] text-[var(--wa-meta)]">Button sent: {m.action.label}</p>

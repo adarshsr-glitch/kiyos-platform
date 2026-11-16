@@ -147,7 +147,7 @@ function Overview({ caseData, events }: { caseData: CaseDetail; events: CaseEven
           </p>
           <Separator className="my-4" />
           <div className="grid grid-cols-2 gap-4 text-xs">
-            <MicroFact label="Case captain" value={caseData.case_captain} />
+            <MicroFact label="Lead expert" value={caseData.case_captain === "Unassigned" ? "Assigned on payment" : caseData.case_captain} />
             <MicroFact label="Tax year" value={caseData.tax_year ?? "—"} />
             <MicroFact label="Arrival" value={caseData.arrival_date ?? "—"} />
             <MicroFact

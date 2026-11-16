@@ -15,7 +15,11 @@ import {
 import { Jurisdictions } from "@/components/country-chip";
 import { Clock, FileText, Search, Users, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { CaseListItem } from "@/lib/types";
+import { JourneyBadge } from "@/components/journey-badge";
+import { JOURNEY_LABEL } from "@/lib/tier";
+import type { CaseListItem, Journey } from "@/lib/types";
+
+const STAGES = Object.keys(JOURNEY_LABEL) as Journey[];
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-IN", {
@@ -27,8 +31,11 @@ function initials(name: string) {
   return name.split(" ").slice(0, 2).map((n) => n[0]).join("");
 }
 
-export function CasesTable({ cases }: { cases: CaseListItem[] }) {
+export function CasesTable({ cases, initialStage }: { cases: CaseListItem[]; initialStage?: string }) {
   const [query, setQuery] = useState("");
+  const [stageFilter, setStageFilter] = useState<string>(
+    STAGES.includes(initialStage as Journey) ? initialStage! : "all"
+  );
   const [captainFilter, setCaptainFilter] = useState<string>("all");
   const [jurFilter, setJurFilter] = useState<string>("all");
 
@@ -51,6 +58,7 @@ export function CasesTable({ cases }: { cases: CaseListItem[] }) {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return cases.filter((c) => {
+      if (stageFilter !== "all" && c.journey !== stageFilter) return false;
       if (captainFilter !== "all" && c.case_captain !== captainFilter) return false;
       if (jurFilter !== "all" && !(c.jurisdictions ?? "").includes(jurFilter)) return false;
       if (!q) return true;
@@ -60,7 +68,7 @@ export function CasesTable({ cases }: { cases: CaseListItem[] }) {
         c.case_captain.toLowerCase().includes(q)
       );
     });
-  }, [cases, query, captainFilter, jurFilter]);
+  }, [cases, query, stageFilter, captainFilter, jurFilter]);
 
   return (
     <div className="space-y-4">
@@ -70,13 +78,20 @@ export function CasesTable({ cases }: { cases: CaseListItem[] }) {
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search by client, case or captain…"
+            placeholder="Search by customer, case or expert…"
             className="pl-9"
           />
         </div>
 
         <FilterChips
-          label="Captain"
+          label="Stage"
+          values={["all", ...STAGES]}
+          labels={JOURNEY_LABEL}
+          selected={stageFilter}
+          onSelect={setStageFilter}
+        />
+        <FilterChips
+          label="Expert"
           icon={<Users className="h-3.5 w-3.5" />}
           values={["all", ...captains]}
           selected={captainFilter}
@@ -102,8 +117,9 @@ export function CasesTable({ cases }: { cases: CaseListItem[] }) {
           <Table>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
-                <TableHead className="w-[340px]">Client</TableHead>
-                <TableHead>Captain</TableHead>
+                <TableHead className="w-[300px]">Customer</TableHead>
+                <TableHead>Stage</TableHead>
+                <TableHead>Lead expert</TableHead>
                 <TableHead>Jurisdictions</TableHead>
                 <TableHead>Tax year</TableHead>
                 <TableHead>Open</TableHead>
@@ -132,7 +148,12 @@ export function CasesTable({ cases }: { cases: CaseListItem[] }) {
                     </Link>
                   </TableCell>
                   <TableCell>
-                    <span className="text-sm text-foreground/80">{c.case_captain}</span>
+                    <JourneyBadge journey={c.journey} />
+                  </TableCell>
+                  <TableCell>
+                    <span className={cn("text-sm", c.case_captain === "Unassigned" ? "text-muted-foreground" : "text-foreground/80")}>
+                      {c.case_captain === "Unassigned" ? "Assigned on payment" : c.case_captain}
+                    </span>
                   </TableCell>
                   <TableCell>
                     <Jurisdictions value={c.jurisdictions} />
@@ -195,12 +216,14 @@ function FilterChips({
   label,
   icon,
   values,
+  labels,
   selected,
   onSelect,
 }: {
   label: string;
   icon?: React.ReactNode;
   values: string[];
+  labels?: Record<string, string>;
   selected: string;
   onSelect: (v: string) => void;
 }) {
@@ -222,7 +245,7 @@ function FilterChips({
                 : "border-border bg-background text-muted-foreground hover:bg-muted"
             )}
           >
-            {v === "all" ? "All" : v}
+            {v === "all" ? "All" : labels?.[v] ?? v}
           </button>
         ))}
       </div>

@@ -32,17 +32,16 @@ export default function DashboardLayout({
   const pathname = usePathname();
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="workspace flex h-screen overflow-hidden bg-background text-foreground">
       {/* ── Sidebar ── */}
       <aside className="flex w-60 flex-col border-r border-sidebar-border bg-sidebar">
         {/* Wordmark */}
-        <div className="flex h-14 items-center px-5">
-          <span className="brand-wordmark text-xl uppercase text-primary">
-            Kiyos
+        <div className="flex h-14 items-center gap-2.5 px-5">
+          <span className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-[13px] font-semibold text-primary-foreground">
+            K
           </span>
-          <span className="ml-2 text-[10px] uppercase tracking-widest text-muted-foreground">
-            Captain
-          </span>
+          <span className="text-[15px] font-semibold text-foreground">Kiyos</span>
+          <span className="text-xs text-muted-foreground">Experts</span>
         </div>
 
         <Separator />
@@ -67,7 +66,7 @@ export default function DashboardLayout({
                 key={item.label}
                 href={item.disabled ? "#" : item.href}
                 className={cn(
-                  "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                  "flex items-center gap-3 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
                   active
                     ? "bg-primary/10 text-primary"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground",
@@ -87,14 +86,14 @@ export default function DashboardLayout({
         <div className="flex items-center gap-3 px-4 py-3">
           <Avatar className="h-8 w-8">
             <AvatarFallback className="bg-primary/10 text-primary text-xs font-semibold">
-              CC
+              VD
             </AvatarFallback>
           </Avatar>
           <div className="min-w-0">
             <p className="truncate text-sm font-medium text-foreground">
-              Case captain
+              Vikram Desai
             </p>
-            <p className="truncate text-xs text-muted-foreground">demo</p>
+            <p className="truncate text-xs text-muted-foreground">Lead expert · CA, CPA</p>
           </div>
         </div>
       </aside>

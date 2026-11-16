@@ -23,6 +23,10 @@ import type {
   Ticket,
   CaseEvent,
   DocumentItem,
+  InitialScan,
+  Plan,
+  DocumentRequest,
+  ProfileChange,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -185,11 +189,13 @@ export function verifyProfile(
 export function uploadDocument(
   caseId: number | string,
   file: File,
-  docType: string | null
+  docType: string | null,
+  requestId?: number | null
 ): Promise<DocumentItem> {
   const form = new FormData();
   form.append("file", file);
   if (docType) form.append("doc_type", docType);
+  if (requestId) form.append("request_id", String(requestId));
   return apiFetch<DocumentItem>(`/cases/${caseId}/documents`, {
     method: "POST",
     body: form,
@@ -228,4 +234,52 @@ export function getDashboardStats(): Promise<DashboardStats> {
 
 export function getDashboardActivity(): Promise<ActivityEntry[]> {
   return apiFetch<ActivityEntry[]>("/dashboard/activity");
+}
+
+export function getInitialScan(caseId: number | string): Promise<InitialScan | null> {
+  return apiFetch<InitialScan | null>(`/cases/${caseId}/initial-scan`);
+}
+
+export async function listPlans(): Promise<Plan[]> {
+  return (await apiFetch<{ plans: Plan[] }>("/plans")).plans;
+}
+
+export function activatePlan(
+  caseId: number | string,
+  body: {
+    offering: Plan["key"];
+    household: "individual" | "couple";
+    payment_method: "upi" | "card" | "netbanking";
+    scope_confirmed: boolean;
+    nda_accepted: boolean;
+    consent: boolean;
+  }
+): Promise<CaseDetail> {
+  return postJson<CaseDetail>(`/cases/${caseId}/activate`, body);
+}
+
+/** Workspace sign-in with the WhatsApp number and a one-time code. */
+export function signIn(caseId: number | string, code: string): Promise<CaseDetail> {
+  return postJson<CaseDetail>(`/cases/${caseId}/sign-in`, { code });
+}
+
+export function listDocumentRequests(caseId: number | string): Promise<DocumentRequest[]> {
+  return apiFetch<DocumentRequest[]>(`/cases/${caseId}/document-requests`);
+}
+
+export function listProfileChanges(caseId: number | string): Promise<ProfileChange[]> {
+  return apiFetch<ProfileChange[]>(`/cases/${caseId}/profile-changes`);
+}
+
+export function decideProfileChange(
+  changeId: number,
+  decision: "confirm" | "reject",
+  by: string
+): Promise<ProfileChange> {
+  return postJson<ProfileChange>(`/profile-changes/${changeId}/decide`, { decision, by });
+}
+
+/** Prototype only: a brand-new prospect messaging Kiyos on WhatsApp. */
+export function startDemoJourney(): Promise<{ case_id: number; conversation_id: number }> {
+  return postJson(`/demo/journeys`, {});
 }

@@ -13,7 +13,16 @@ export interface CaseListItem {
   open_items_count: number;
   open_topics_count: number;
   open_notices_count: number;
+  plan: "free" | "premium";
+  journey: Journey;
 }
+
+/**
+ * Where a customer is in the funnel, computed by the API so both workspaces agree:
+ * scan running → scan done but workspace not opened → free → plan chosen but payment
+ * failed → paid.
+ */
+export type Journey = "intake" | "signup" | "free" | "payment_pending" | "paid";
 
 export interface Fact {
   id: number;
@@ -157,6 +166,113 @@ export interface CaseDetail {
   conversation_id: number | null;
   profile_confirmed_at: string | null;
   plan: "free" | "premium";
+  /** Where the customer is in the WhatsApp journey */
+  stage: "intake" | "free" | "paid" | null;
+  plan_choice: PlanChoice | null;
+  activated_at: string | null;
+  country_status: Partial<Record<"IN" | "US", CountryStatus>> | null;
+  reviewers: Reviewer[] | null;
+  /** WhatsApp number — the customer's identity, also used to sign in to the workspace */
+  phone: string | null;
+  journey: Journey;
+}
+
+export interface PlanChoice {
+  offering: "advisory" | "full";
+  name: string;
+  household: "individual" | "couple";
+  price_inr: number;
+  price_usd: number;
+  gst_included: boolean;
+  payment_method: string;
+  /** Set only once paid */
+  receipt?: string;
+  nda_accepted_at?: string;
+  consent_at?: string;
+  /** A checkout attempt that didn't complete */
+  payment_status?: "failed";
+  attempted_at?: string;
+  failure_reason?: string;
+}
+
+export interface CountryStatus {
+  status: string;
+  label: string;
+  year: string;
+  filing: string;
+  due: string;
+  state: string;
+  reviewed_by?: string;
+}
+
+export interface Reviewer {
+  name: string;
+  role: string;
+  country: "IN" | "US" | "BOTH";
+  qualification: string;
+}
+
+export interface RiskRow {
+  area: string;
+  country: "IN" | "US" | "BOTH";
+  finding: string;
+  why: string;
+  input: string;
+  input_question: string;
+  confidence: "likely" | "incomplete" | string;
+  rule: string | null;
+  priced_separately: boolean;
+}
+
+export interface InitialScan {
+  id: number;
+  version: string;
+  answers: Record<string, string>;
+  rows: RiskRow[];
+  missing: string[];
+  confidence: "medium" | "partial" | "low" | string;
+  household: "individual" | "couple";
+  consent_saved: boolean;
+  price_low_inr: number;
+  price_high_inr: number;
+  created_at: string;
+}
+
+export interface Plan {
+  key: "advisory" | "full";
+  name: string;
+  summary: string;
+  individual_inr: number;
+  individual_usd: number;
+  couple_inr: number;
+  couple_usd: number;
+}
+
+export interface DocumentRequest {
+  id: number;
+  title: string;
+  why: string;
+  country: "IN" | "US" | "BOTH" | null;
+  doc_type: string | null;
+  status: "pending" | "received" | "reviewed" | "rejected";
+  rejection_reason: string | null;
+  document_id: number | null;
+  filename: string | null;
+  due_date: string | null;
+}
+
+export interface ProfileChange {
+  id: number;
+  fact_id: number | null;
+  fact_key: string;
+  previous_value: string | null;
+  proposed_value: string;
+  source: string;
+  quote: string | null;
+  affects: string | null;
+  status: "proposed" | "confirmed" | "rejected";
+  decided_at: string | null;
+  created_at: string;
 }
 
 export interface Message {
@@ -172,14 +288,14 @@ export interface Message {
   category?: "generic" | "generic_unanswered" | "generic_over_limit" | "personal" | null;
   /** Call-to-action rendered under an agent message */
   action?: { type: "plans" | "upload" | "verify" | string; label: string; href: string } | null;
+  /** WhatsApp quick-reply buttons offered with an agent message */
+  options?: string[] | null;
   created_at: string;
 }
 
 export interface FreeUsage {
   generic_used: number;
   generic_limit: number;
-  messages_used: number;
-  messages_limit: number;
 }
 
 export interface ConversationState {
@@ -188,7 +304,9 @@ export interface ConversationState {
   controller: "agent" | "advisor";
   controller_name: string | null;
   plan: "free" | "premium";
+  stage: "intake" | "free" | "paid" | null;
   usage: FreeUsage | null;
+  intake_progress: { answered: number; total: number } | null;
   messages: Message[];
 }
 

@@ -54,7 +54,7 @@ export function ViewProvider({ children }: { children: ReactNode }) {
     setModeInternal(m);
     localStorage.setItem("kiyos-view-mode", m);
     if (m === "customer") {
-      router.push("/portal/dashboard");
+      router.push("/portal");
     } else {
       router.push("/");
     }

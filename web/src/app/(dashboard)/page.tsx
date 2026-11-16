@@ -15,7 +15,7 @@ import {
   getDashboardActivity,
   listOpenTickets,
 } from "@/lib/api";
-import type { CaseListItem, DashboardStats, ActivityEntry, Ticket } from "@/lib/types";
+import type { CaseListItem, DashboardStats, ActivityEntry, Journey, Ticket } from "@/lib/types";
 import {
   Card,
   CardContent,
@@ -28,6 +28,7 @@ import { Separator } from "@/components/ui/separator";
 import { StatTile } from "@/components/stat-tile";
 import { Jurisdictions } from "@/components/country-chip";
 import { BarMiniChart } from "@/components/mini-chart";
+import { JourneyBadge } from "@/components/journey-badge";
 
 function todayInIST() {
   return new Date().toLocaleDateString("en-IN", {
@@ -37,19 +38,6 @@ function todayInIST() {
     year: "numeric",
     timeZone: "Asia/Kolkata",
   });
-}
-
-function greeting() {
-  const hourIST = Number(
-    new Date().toLocaleString("en-US", {
-      hour: "numeric",
-      hour12: false,
-      timeZone: "Asia/Kolkata",
-    })
-  );
-  if (hourIST < 12) return "Good morning";
-  if (hourIST < 17) return "Good afternoon";
-  return "Good evening";
 }
 
 function timeAgo(iso: string) {
@@ -87,13 +75,9 @@ export default async function HomePage() {
   const awaitingSignoff = stats?.awaiting_signoff ?? 0;
   const openTickets = stats?.open_tickets ?? 0;
   const ticketsOverdue = stats?.tickets_overdue ?? 0;
-
-  const flourish =
-    openItems > 15
-      ? `${openItems} items need a captain's eye.`
-      : openItems > 0
-      ? `${openItems} items on the board.`
-      : "Nothing on your plate.";
+  const needsAttention = openTickets + awaitingSignoff + openNotices;
+  const byStage = (j: Journey) => cases.filter((c) => c.journey === j);
+  const earlier = cases.filter((c) => c.journey !== "paid").length;
 
   return (
     <div className="flex flex-col h-full">
@@ -105,34 +89,30 @@ export default async function HomePage() {
       </header>
 
       <div className="flex-1 overflow-auto">
-        <div className="mx-auto max-w-6xl px-6 py-8 space-y-8">
-          {/* Greeting */}
-          <section>
-            <p className="text-[11px] uppercase tracking-[0.2em] text-primary mb-3">
-              Case captain workspace
-            </p>
-            <div className="flex items-end justify-between gap-6 flex-wrap">
-              <div>
-                <h1 className="font-serif text-4xl font-medium tracking-tight text-foreground leading-[1.1]">
-                  {greeting()}, captain.{" "}
-                  <span className="font-serif italic text-primary">{flourish}</span>
-                </h1>
-                <p className="mt-3 text-sm text-muted-foreground">
-                  {(stats?.open_cases ?? 0)} open case{(stats?.open_cases ?? 0) === 1 ? "" : "s"}
-                  {" · "}
-                  {awaitingSignoff} assessment{awaitingSignoff === 1 ? "" : "s"} awaiting sign-off
-                  {" · "}
-                  {openNotices} open notice{openNotices === 1 ? "" : "s"}
-                </p>
-              </div>
-              <div className="flex gap-2">
-                <Button asChild variant="outline" size="sm" className="rounded-full">
-                  <Link href="/cases">
-                    All cases <ArrowRight className="ml-1 h-4 w-4" />
-                  </Link>
-                </Button>
-              </div>
+        <div className="mx-auto max-w-6xl px-6 py-6 space-y-5">
+          <section className="flex items-center justify-between gap-4 flex-wrap">
+            <div className="flex items-center gap-3 flex-wrap">
+              <h1 className="text-xl font-semibold tracking-tight text-foreground">Today</h1>
+              {needsAttention > 0 ? (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-inset ring-amber-600/20">
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                  {needsAttention} need{needsAttention === 1 ? "s" : ""} attention
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-800 ring-1 ring-inset ring-emerald-600/15">
+                  <CheckCircle2 className="h-3 w-3" /> Queue clear
+                </span>
+              )}
+              <span className="text-sm text-muted-foreground">
+                {stats?.open_cases ?? 0} paid case{(stats?.open_cases ?? 0) === 1 ? "" : "s"}
+                {earlier > 0 && ` · ${earlier} customer${earlier === 1 ? "" : "s"} earlier in the funnel`}
+              </span>
             </div>
+            <Button asChild variant="outline" size="sm">
+              <Link href="/cases">
+                All cases <ArrowRight className="ml-1 h-4 w-4" />
+              </Link>
+            </Button>
           </section>
 
           {apiError && (
@@ -150,13 +130,87 @@ export default async function HomePage() {
             </Card>
           )}
 
+          {/* Queue + funnel */}
+          <section className="grid gap-4 lg:grid-cols-3">
+            <Card className="lg:col-span-2">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-semibold">Queue</CardTitle>
+                <CardDescription>Work waiting on an expert</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-0">
+                <QueueRow
+                  label="Tickets from Kiyos"
+                  count={openTickets}
+                  href={tickets[0] ? `/cases/${tickets[0].case_id}` : "/cases"}
+                  urgent={ticketsOverdue > 0}
+                  hint={
+                    openTickets === 0
+                      ? "no questions waiting"
+                      : ticketsOverdue > 0
+                      ? `${ticketsOverdue} past the one-business-day reply time`
+                      : "flagged questions to answer"
+                  }
+                />
+                <Separator />
+                <QueueRow
+                  label="Assessments to sign off"
+                  count={awaitingSignoff}
+                  href="/cases"
+                  hint={awaitingSignoff === 0 ? "cleared" : "draft or in review"}
+                />
+                <Separator />
+                <QueueRow
+                  label="Tax authority notices"
+                  count={openNotices}
+                  href="/cases"
+                  hint={openNotices === 0 ? "all responded" : "awaiting response"}
+                />
+                <Separator />
+                <QueueRow
+                  label="Open action items"
+                  count={openItems}
+                  href="/cases"
+                  hint="across paid cases"
+                />
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-semibold">Customers by stage</CardTitle>
+                <CardDescription>From first WhatsApp message to paid</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ul className="space-y-0.5">
+                  {(["intake", "signup", "free", "payment_pending", "paid"] as const).map((j) => {
+                    const people = byStage(j);
+                    return (
+                      <li key={j}>
+                        <Link
+                          href={`/cases?stage=${j}`}
+                          className="-mx-2 flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted/60"
+                        >
+                          <JourneyBadge journey={j} />
+                          <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                            {people.slice(0, 2).map((p) => p.client_name).join(", ")}
+                            {people.length > 2 && ` +${people.length - 2}`}
+                          </span>
+                          <span className="text-sm font-semibold tabular-nums text-foreground">{people.length}</span>
+                        </Link>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </CardContent>
+            </Card>
+          </section>
+
           {/* Stats strip */}
           <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <StatTile
-              label="Open cases"
+              label="Paid cases"
               value={stats?.open_cases ?? 0}
               icon={<Briefcase className="h-4 w-4" />}
-              accent
             />
             <StatTile
               label="Awaiting sign-off"
@@ -178,54 +232,49 @@ export default async function HomePage() {
             />
           </section>
 
-          {/* Queue + Workload */}
+          {/* Activity + workload */}
           <section className="grid gap-4 lg:grid-cols-3">
             <Card className="lg:col-span-2">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Queue</CardTitle>
-                <CardDescription>Work waiting on the case captain</CardDescription>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <div>
+                  <CardTitle className="text-sm font-semibold">Recent activity</CardTitle>
+                  <CardDescription>What moved across all cases</CardDescription>
+                </div>
               </CardHeader>
-              <CardContent className="space-y-1">
-                <QueueRow
-                  label="Tickets from Kiyos"
-                  count={openTickets}
-                  href={tickets[0] ? `/cases/${tickets[0].case_id}` : "/cases"}
-                  hint={
-                    openTickets === 0
-                      ? "no questions waiting"
-                      : ticketsOverdue > 0
-                      ? `${ticketsOverdue} past 24h SLA`
-                      : "low-confidence questions to answer"
-                  }
-                />
-                <Separator />
-                <QueueRow
-                  label="Assessments to sign off"
-                  count={awaitingSignoff}
-                  href="/cases"
-                  hint={awaitingSignoff === 0 ? "cleared" : "draft or in review"}
-                />
-                <Separator />
-                <QueueRow
-                  label="Open action items"
-                  count={openItems}
-                  href="/cases"
-                  hint="not blocked, not done"
-                />
-                <Separator />
-                <QueueRow
-                  label="Tax authority notices"
-                  count={openNotices}
-                  href="/cases"
-                  hint={openNotices === 0 ? "all responded" : "awaiting response"}
-                />
+              <CardContent>
+                {activity.length === 0 ? (
+                  <p className="py-6 text-center text-sm text-muted-foreground">Nothing yet.</p>
+                ) : (
+                  <ul className="divide-y">
+                    {activity.slice(0, 6).map((a, i) => (
+                      <li key={i}>
+                        <Link
+                          href={`/cases/${a.case_id}`}
+                          className="flex items-start justify-between gap-4 py-2.5 group"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm text-foreground leading-snug">
+                              <span className="font-medium">{a.actor}</span>{" "}
+                              <span className="text-muted-foreground">{a.verb}</span>{" "}
+                              <span className="font-medium">{a.object}</span>
+                            </p>
+                            <p className="mt-0.5 text-xs text-muted-foreground">{a.client_name}</p>
+                          </div>
+                          <span className="text-xs text-muted-foreground tabular-nums shrink-0">
+                            {timeAgo(a.at)}
+                          </span>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </CardContent>
             </Card>
 
             <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Workload</CardTitle>
-                <CardDescription>Open cases by captain</CardDescription>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-semibold">Workload</CardTitle>
+                <CardDescription>Paid cases by lead expert</CardDescription>
               </CardHeader>
               <CardContent>
                 <BarMiniChart
@@ -239,76 +288,22 @@ export default async function HomePage() {
             </Card>
           </section>
 
-          {/* Recent activity */}
-          <section>
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
-                <div>
-                  <CardTitle className="text-base">Recent activity</CardTitle>
-                  <CardDescription>What moved across all cases</CardDescription>
-                </div>
-                <Button asChild variant="ghost" size="sm">
-                  <Link href="/cases">
-                    See all <ArrowRight className="ml-1 h-4 w-4" />
-                  </Link>
-                </Button>
-              </CardHeader>
-              <CardContent>
-                {activity.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-10 text-center">
-                    <div className="mb-2 text-3xl">📭</div>
-                    <p className="text-sm font-medium text-foreground">Nothing yet</p>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      Seed cases with{" "}
-                      <code className="rounded bg-muted px-1 py-0.5 font-mono">make seed</code>.
-                    </p>
-                  </div>
-                ) : (
-                  <ul className="divide-y">
-                    {activity.map((a, i) => (
-                      <li key={i}>
-                        <Link
-                          href={`/cases/${a.case_id}`}
-                          className="flex items-start justify-between gap-4 py-3 group"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <p className="text-sm text-foreground leading-snug">
-                              <span className="font-medium">{a.actor}</span>{" "}
-                              <span className="text-muted-foreground">{a.verb}</span>{" "}
-                              <span className="font-medium">{a.object}</span>
-                            </p>
-                            <p className="mt-0.5 text-xs text-muted-foreground">
-                              {a.client_name}
-                            </p>
-                          </div>
-                          <span className="text-xs text-muted-foreground tabular-nums shrink-0">
-                            {timeAgo(a.at)}
-                          </span>
-                        </Link>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </CardContent>
-            </Card>
-          </section>
-
           {/* Case roster summary */}
           <section>
             <Card>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
                 <div>
-                  <CardTitle className="text-base">Case roster</CardTitle>
-                  <CardDescription>All open cases, most recent first</CardDescription>
+                  <CardTitle className="text-sm font-semibold">Customers</CardTitle>
+                  <CardDescription>Most recently updated first</CardDescription>
                 </div>
               </CardHeader>
               <CardContent className="p-0">
                 <ul className="divide-y">
-                  {cases.slice(0, 6).map((c) => (
+                  {cases.slice(0, 8).map((c) => (
                     <li key={c.id}>
                       <Link
                         href={`/cases/${c.id}`}
-                        className="flex items-center gap-4 px-6 py-3 group hover:bg-muted/40 transition-colors"
+                        className="flex items-center gap-4 px-6 py-2.5 group hover:bg-muted/40 transition-colors"
                       >
                         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary text-xs font-semibold">
                           {c.client_name
@@ -325,6 +320,7 @@ export default async function HomePage() {
                             {c.name}
                           </p>
                         </div>
+                        <JourneyBadge journey={c.journey} className="w-[118px] justify-center" />
                         <Jurisdictions value={c.jurisdictions} />
                         <div className="flex items-center gap-2 text-xs shrink-0">
                           {c.open_items_count > 0 && (
@@ -352,7 +348,7 @@ export default async function HomePage() {
           </section>
 
           <p className="text-xs text-muted-foreground text-center pb-4">
-            Prototype · v0.4-prd-fidelity · counts computed live from six seeded cases
+            Prototype · counts computed live from the seeded customers
           </p>
         </div>
       </div>
@@ -365,17 +361,19 @@ function QueueRow({
   count,
   href,
   hint,
+  urgent,
 }: {
   label: string;
   count: number;
   href: string;
   hint?: string;
+  urgent?: boolean;
 }) {
   const empty = count === 0;
   return (
     <Link
       href={href}
-      className="flex items-center justify-between py-3 px-1 group hover:bg-muted/40 rounded-md transition-colors -mx-1"
+      className="flex items-center justify-between py-2.5 px-1 group hover:bg-muted/40 rounded-md transition-colors -mx-1"
     >
       <div className="min-w-0 flex items-center gap-2">
         <MessageCircle className="h-4 w-4 text-muted-foreground" />
@@ -383,7 +381,7 @@ function QueueRow({
           <p className="text-sm font-medium text-foreground group-hover:text-primary transition-colors">
             {label}
           </p>
-          {hint && <p className="mt-0.5 text-[11px] text-muted-foreground">{hint}</p>}
+          {hint && <p className={urgent ? "mt-0.5 text-[11px] text-rose-700" : "mt-0.5 text-[11px] text-muted-foreground"}>{hint}</p>}
         </div>
       </div>
       <div className="flex items-center gap-2 shrink-0">

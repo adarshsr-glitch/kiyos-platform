@@ -2,6 +2,7 @@ import type { CaseDetail } from "@/lib/types";
 import { Jurisdictions } from "./country-chip";
 import { Calendar, Briefcase, Clock } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { JourneyBadge } from "./journey-badge";
 
 function residencyFromCase(c: CaseDetail): string | null {
   const t = c.topics.find(
@@ -36,16 +37,30 @@ export function CaseHero({ caseData }: { caseData: CaseDetail }) {
   const openTopics = caseData.topics.filter((t) => t.status !== "resolved").length;
 
   return (
-    <div className="border-b bg-gradient-to-b from-muted/40 to-background px-6 py-6">
+    <div className="border-b bg-card px-6 py-5">
       <div className="flex items-start justify-between gap-6 flex-wrap">
         <div className="flex-1 min-w-0">
-          <p className="text-[11px] uppercase tracking-[0.2em] text-primary mb-2">
-            {caseData.tax_year ? `Tax year ${caseData.tax_year}` : "Case"}
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+              {caseData.client_name}
+            </h1>
+            <JourneyBadge journey={caseData.journey} />
+            {caseData.plan_choice?.payment_status === "failed" ? (
+              <span className="text-xs text-amber-800">
+                {caseData.plan_choice.name} · {caseData.plan_choice.household} · payment failed
+              </span>
+            ) : (
+              caseData.plan_choice && (
+                <span className="text-xs text-muted-foreground">
+                  {caseData.plan_choice.name} · {caseData.plan_choice.household}
+                </span>
+              )
+            )}
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {caseData.name}
+            {caseData.tax_year && ` · Tax year ${caseData.tax_year}`}
           </p>
-          <h1 className="font-serif text-3xl font-medium leading-tight text-foreground">
-            {caseData.client_name}
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">{caseData.name}</p>
 
           <div className="mt-3 flex items-center gap-3 flex-wrap">
             {residency && (
@@ -69,7 +84,7 @@ export function CaseHero({ caseData }: { caseData: CaseDetail }) {
             )}
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
               <Briefcase className="h-3.5 w-3.5" />
-              {caseData.case_captain}
+              {caseData.case_captain === "Unassigned" ? "Lead expert assigned on payment" : caseData.case_captain}
             </span>
           </div>
         </div>

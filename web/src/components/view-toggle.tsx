@@ -5,7 +5,7 @@ import { useView, type ViewMode } from "@/lib/view-context";
 import { cn } from "@/lib/utils";
 
 const SEGMENTS: { mode: ViewMode; label: string; icon: typeof Briefcase }[] = [
-  { mode: "captain", label: "Captain", icon: Briefcase },
+  { mode: "captain", label: "Expert", icon: Briefcase },
   { mode: "customer", label: "Customer", icon: User },
 ];
 

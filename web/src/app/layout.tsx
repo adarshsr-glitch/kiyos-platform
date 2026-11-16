@@ -19,7 +19,7 @@ const playfair = Playfair_Display({
 });
 
 export const metadata: Metadata = {
-  title: "Kiyos — Case Captain Workspace",
+  title: "Kiyos",
   description: "Cross-border tax advisory for NRIs and returning NRIs",
 };
 

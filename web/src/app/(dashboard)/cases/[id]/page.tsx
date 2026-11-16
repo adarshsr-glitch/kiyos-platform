@@ -54,7 +54,7 @@ export default async function CaseDetailPage({
           />
         </ScrollArea>
 
-        <div className="w-[380px] shrink-0">
+        <div className="w-[320px] shrink-0">
           {caseData.conversation_id ? (
             <ChatPanel
               conversationId={caseData.conversation_id}
