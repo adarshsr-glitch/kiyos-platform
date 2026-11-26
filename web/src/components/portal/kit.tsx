@@ -3,30 +3,8 @@
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 
-export function PageHeader({
-  eyebrow,
-  title,
-  meta,
-  actions,
-}: {
-  eyebrow?: React.ReactNode;
-  title: React.ReactNode;
-  meta?: React.ReactNode;
-  actions?: React.ReactNode;
-}) {
-  return (
-    <header className="mb-6 flex flex-wrap items-end justify-between gap-x-8 gap-y-3">
-      <div className="min-w-0">
-        {eyebrow && <p className="mb-1 text-xs font-medium text-muted-foreground">{eyebrow}</p>}
-        <h1 className="font-serif text-[28px] font-medium leading-tight tracking-tight text-foreground sm:text-[32px]">
-          {title}
-        </h1>
-        {meta && <div className="mt-1.5 text-sm text-muted-foreground">{meta}</div>}
-      </div>
-      {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
-    </header>
-  );
-}
+// The page header is shared with the expert workspace (one pattern on both sides).
+export { PageHeader } from "@/components/page-header";
 
 export function Section({
   title,

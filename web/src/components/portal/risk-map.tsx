@@ -1,14 +1,15 @@
 import Link from "next/link";
-import { ArrowRight, CircleHelp, MessageCircle } from "lucide-react";
-import type { FreeUsage, InitialScan, RiskRow } from "@/lib/types";
+import { PdfAttachment } from "./pdf-attachment";
+import { ArrowRight, MessageCircle } from "lucide-react";
+import type { FreeUsage, InitialScan } from "@/lib/types";
 import { formatDate } from "@/lib/format";
-import { COUNTRY, Pill, Section, PageHeader, inr } from "./kit";
-
-const GROUPS: { code: RiskRow["country"]; title: string }[] = [
-  { code: "BOTH", title: "Across both countries" },
-  { code: "IN", title: "India" },
-  { code: "US", title: "United States" },
-];
+import { Section, PageHeader, inr } from "./kit";
+import { whatsappHref, whatsappTarget } from "@/lib/whatsapp";
+import { ResidencyClock } from "@/components/charts/residency-clock";
+import { RangeBars } from "@/components/charts/range-bars";
+import { MoneyChart } from "@/components/charts/money-chart";
+import { CrossBorderMap } from "./assessment/cross-border-map";
+import type { Holding, Residency } from "@/lib/residency";
 
 const CONFIDENCE: Record<string, { label: string; tone: "green" | "amber" | "red"; note: string }> = {
   medium: { label: "Medium", tone: "green", note: "You answered every question. An expert still confirms it." },
@@ -17,7 +18,17 @@ const CONFIDENCE: Record<string, { label: string; tone: "green" | "amber" | "red
 };
 
 /** The free five-minute assessment: bounded, evidence-linked, priced — never a personal position. */
-export function RiskMap({ scan, usage }: { scan: InitialScan | null; usage: FreeUsage | null }) {
+export function RiskMap({
+  scan,
+  usage,
+  residency,
+  holdings,
+}: {
+  scan: InitialScan | null;
+  usage: FreeUsage | null;
+  residency?: Residency | null;
+  holdings?: Holding[];
+}) {
   if (!scan) {
     return (
       <PageHeader
@@ -29,72 +40,63 @@ export function RiskMap({ scan, usage }: { scan: InitialScan | null; usage: Free
   const conf = CONFIDENCE[scan.confidence] ?? CONFIDENCE.partial;
   const answered = Object.keys(scan.answers).length;
   const extras = scan.rows.filter((r) => r.priced_separately);
-  const left = usage ? Math.max(usage.generic_limit - usage.generic_used, 0) : 3;
+  const left = usage ? Math.max(usage.generic_limit - usage.generic_used, 0) : 5;
 
   return (
     <div>
       <PageHeader
         eyebrow={`Initial scan · ${formatDate(scan.created_at, { day: "numeric", month: "short", year: "numeric" })}`}
-        title="Your India–US risk map"
+        title="Your India–US assessment"
         meta={
           <>
-            {scan.rows.length} areas to look at, from your {answered} answers on WhatsApp.{" "}
-            <span className="text-foreground">A first scan, not a personal tax opinion.</span>
+            Preliminary, from your {answered} answers on WhatsApp.{" "}
+            <span className="text-foreground">A first look, not a personal tax position.</span>
           </>
         }
         actions={
+          <span className="flex flex-wrap items-center gap-2">
+          <PdfAttachment variant="button" label="Download PDF" />
           <Link
-            href="/portal/upgrade"
+            href="/portal/plans"
             className="inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
             Compare plans <ArrowRight className="h-3.5 w-3.5" />
           </Link>
+          </span>
         }
       />
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
-        <Section title="What likely needs attention" count={scan.rows.length} flush>
-          <div className="hidden grid-cols-[minmax(0,1fr)_170px_84px] gap-4 border-b px-5 pb-2 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground md:grid">
-            <span>Area</span>
-            <span>Your answer</span>
-            <span className="text-right">Confidence</span>
-          </div>
-          {GROUPS.map((g) => {
-            const rows = scan.rows.filter((r) => r.country === g.code);
-            if (!rows.length) return null;
-            return (
-              <div key={g.code}>
-                <p className="flex items-center gap-1.5 bg-muted/40 px-5 py-1.5 text-[11px] font-semibold text-muted-foreground">
-                  <span aria-hidden>{COUNTRY[g.code].flag}</span>
-                  {g.title}
-                </p>
-                <ul className="divide-y">
-                  {rows.map((r) => (
-                    <li key={r.area} className="grid gap-2 px-5 py-3.5 md:grid-cols-[minmax(0,1fr)_170px_84px] md:gap-4">
-                      <div className="min-w-0">
-                        <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{r.area}</p>
-                        <p className="mt-0.5 text-[15px] font-medium leading-snug text-foreground">{r.finding}</p>
-                        <p className="mt-1 text-[13px] leading-snug text-muted-foreground">{r.why}</p>
-                      </div>
-                      <div className="text-[13px]">
-                        <p className="text-[11px] text-muted-foreground md:hidden">Your answer</p>
-                        <p className="rounded-md bg-muted/60 px-2 py-1 text-foreground" title={r.input_question}>
-                          “{r.input}”
-                        </p>
-                        <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-muted-foreground">{r.input_question}</p>
-                      </div>
-                      <div className="md:text-right">
-                        <Pill tone={r.confidence === "likely" ? "green" : "amber"}>
-                          {r.confidence === "likely" ? "Likely" : "Needs detail"}
-                        </Pill>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            );
-          })}
-        </Section>
+        <div className="min-w-0 space-y-5">
+          <section className="rounded-2xl bg-card px-6 py-7 shadow-[0_0_0_1px_hsl(var(--border))] sm:px-8">
+            <CrossBorderMap scan={scan} />
+          </section>
+          {residency && residency.india.length > 0 && residency.stays.length + residency.facts.length > 0 ? (
+            <Section title="Your residency, year by year">
+              <ResidencyClock data={residency} />
+            </Section>
+          ) : (
+            <Link
+              href="/portal/onboarding"
+              className="flex items-center justify-between gap-4 rounded-2xl border border-primary/30 bg-primary/5 px-5 py-4 hover:bg-primary/10"
+            >
+              <span>
+                <span className="block text-sm font-semibold text-foreground">Add your travel and money details</span>
+                <span className="block text-[13px] text-muted-foreground">
+                  Your trips decide your residency in each country. Kiyos calculates it year by year from them.
+                </span>
+              </span>
+              <ArrowRight className="h-4 w-4 shrink-0 text-primary" />
+            </Link>
+          )}
+
+
+          {holdings && holdings.length > 0 && (
+            <Section title="Where your money sits">
+              {holdings.some((h) => typeof h.amount === "number") ? <MoneyChart holdings={holdings} /> : <RangeBars holdings={holdings} />}
+            </Section>
+          )}
+        </div>
 
         <div className="space-y-5">
           <Section title="Indicative price">
@@ -111,34 +113,27 @@ export function RiskMap({ scan, usage }: { scan: InitialScan | null; usage: Free
               </p>
             )}
             <Link
-              href="/portal/upgrade"
+              href="/portal/plans"
               className="mt-4 flex items-center justify-between rounded-lg border px-3 py-2 text-sm font-medium text-foreground hover:bg-muted"
             >
               See what each plan covers <ArrowRight className="h-4 w-4 text-muted-foreground" />
             </Link>
           </Section>
 
-          <Section title="Still unknown" count={scan.missing.length}>
-            <ul className="space-y-2">
-              {scan.missing.map((m) => (
-                <li key={m} className="flex gap-2 text-[13px] text-foreground">
-                  <CircleHelp className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  {m}
-                </li>
-              ))}
-            </ul>
-            <div className="mt-4 flex items-center gap-2 border-t pt-3">
-              <Pill tone={conf.tone}>Confidence: {conf.label}</Pill>
-            </div>
-            <p className="mt-1.5 text-xs text-muted-foreground">{conf.note}</p>
+          <Section title="How sure this is">
+            <p className="text-[14px] font-medium text-foreground">{conf.label} confidence</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">{conf.note}</p>
           </Section>
 
           <div className="flex gap-3 rounded-2xl border border-dashed px-4 py-3">
             <MessageCircle className="mt-0.5 h-4 w-4 shrink-0 text-[#00a884]" />
             <p className="text-xs leading-relaxed text-muted-foreground">
-              <span className="font-medium text-foreground">{left} of 3 free questions left.</span> Ask anything general
+              <span className="font-medium text-foreground">{left} of {usage?.generic_limit ?? 5} free questions left.</span> Ask anything general
               on WhatsApp, like “What is RNOR?”. Questions about your own situation need a plan — an expert checks every
               personal answer.
+              <Link href={whatsappHref} target={whatsappTarget} className="mt-2 flex items-center gap-1 font-semibold text-primary">
+                Ask on WhatsApp <ArrowRight className="h-3.5 w-3.5" />
+              </Link>
             </p>
           </div>
         </div>

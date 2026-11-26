@@ -1,13 +1,6 @@
-import { redirect } from "next/navigation";
-import { getCase, listProfileChanges } from "@/lib/api";
-import { portalCaseId } from "@/lib/portal-case";
-import { tierOf } from "@/lib/tier";
-import { Profile } from "@/components/portal/profile";
+import { moved } from "@/lib/moved";
 
-export default async function ProfilePage() {
-  const id = portalCaseId();
-  const caseData = await getCase(id);
-  if (tierOf(caseData) !== "premium") redirect("/portal");
-  const changes = await listProfileChanges(id);
-  return <Profile caseData={caseData} changes={changes} />;
+/** Moved to /portal/profile; old links keep working. */
+export default function Moved({ searchParams }: { searchParams: Record<string, string | string[] | undefined> }) {
+  moved("/portal/profile", searchParams);
 }

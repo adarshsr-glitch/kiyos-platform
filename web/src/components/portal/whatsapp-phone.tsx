@@ -55,8 +55,9 @@ export function WhatsAppPhone({
       onState={onState}
       team={tier === "premium" ? caseData.reviewers : null}
       compact={!fullScreen}
-      fullChatHref="/portal/chat"
+      fullChatHref="/portal/messages"
       portalMode
+      initialInput={fullScreen ? search.get("ask") ?? undefined : undefined}
     />
   );
 

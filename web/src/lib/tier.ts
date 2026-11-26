@@ -17,11 +17,11 @@ export function tierOf(caseData: Pick<CaseDetail, "plan" | "stage">): CustomerTi
 /** Where the portal root sends each customer. */
 export function homeFor(journey: Journey): string {
   return {
-    intake: "/portal/welcome",
+    intake: "/portal/whatsapp",
     signup: "/portal/signin",
     free: "/portal/assessment",
-    payment_pending: "/portal/upgrade",
-    paid: "/portal/dashboard",
+    payment_pending: "/portal/plans",
+    paid: "/portal/overview",
   }[journey];
 }
 

@@ -56,7 +56,7 @@ export function ViewProvider({ children }: { children: ReactNode }) {
     if (m === "customer") {
       router.push("/portal");
     } else {
-      router.push("/");
+      router.push("/expert");
     }
   };
 

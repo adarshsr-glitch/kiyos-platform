@@ -29,16 +29,23 @@ from engine.rules import list_rules, load_rule
 from infra.schema import Case, Message
 from services._ai import ai_call, ai_enabled, find_pii, log_fallback_call, scrub_pii
 
+def _answerable_rules():
+    """Rules the agent may use or cite in answers to customers: validated ones only.
+    Rules marked pending_validation feed calculations (shown as pending) but never
+    a customer-facing answer."""
+    return [r for r in list_rules() if r.status == "active"]
+
+
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.7"))
 
 # Free plan (PRD §7 Free Q&A, decision 10 Nov 2026): three generic questions in total
 # per person; personal questions pivot to a paid offering from the first question,
 # whatever the count. The five-minute assessment is separate and never counted.
-FREE_GENERIC_LIMIT = 3
+FREE_GENERIC_LIMIT = 5
 
-PLANS_ACTION = {"type": "plans", "label": "See plans", "href": "/portal/upgrade"}
+PLANS_ACTION = {"type": "plans", "label": "See plans", "href": "/portal/plans"}
 UPLOAD_ACTION = {"type": "upload", "label": "Open secure upload", "href": "/portal/documents"}
-VERIFY_ACTION = {"type": "verify", "label": "Update my details", "href": "/portal/verify"}
+VERIFY_ACTION = {"type": "verify", "label": "Update my details", "href": "/portal/profile"}
 MAX_TOOL_ROUNDS = 5
 RULE_ID_RE = re.compile(r"\b[A-Z]{2,4}-[A-Z0-9]+(?:-[A-Z0-9]+)+\b")
 
@@ -84,6 +91,49 @@ _PERSONAL_RE = re.compile(
 )
 
 
+# ── Agent tuning: fixes an expert applied from Agent quality after a failed check.
+# Each one changes what the agent does; it is stored, so it holds until it's undone.
+from pathlib import Path  # noqa: E402
+
+TUNING_PATH = Path(__file__).resolve().parents[2] / "data" / "agent-tuning.json"
+FIXES: dict[str, dict[str, str]] = {
+    "hinglish_personal": {
+        "title": "Treat Hinglish first-person words as personal",
+        "why": "“Mera”, “mujhe”, “hamara” mean my, me and our. The check only knew English pronouns, so a question about the customer's own RSUs was answered as general.",
+        "change": "Add mera, meri, mere, mujhe, mujhko, hamara, hamari, hamare, humara to the words that make a question personal.",
+    },
+    "dotted_abbreviations": {
+        "title": "Read dotted abbreviations as the term",
+        "why": "“R.N.O.R.” didn't match the approved RNOR rule, so a question the rule answers was handed off.",
+        "change": "Before matching, read R.N.O.R. as RNOR (any letters separated by dots).",
+    },
+}
+
+
+def tuning() -> dict[str, bool]:
+    try:
+        return json.loads(TUNING_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def set_fix(key: str, on: bool) -> dict[str, bool]:
+    t = tuning()
+    t[key] = on
+    TUNING_PATH.write_text(json.dumps(t, indent=2))
+    return t
+
+
+_HINGLISH_RE = re.compile(r"\b(mera|meri|mere|mujhe|mujhko|hamara|hamari|hamare|humara|humari)\b", re.IGNORECASE)
+_DOTTED_RE = re.compile(r"\b((?:[A-Za-z]\.){2,})")
+
+
+def normalise_question(text: str) -> str:
+    if tuning().get("dotted_abbreviations"):
+        text = _DOTTED_RE.sub(lambda m: m.group(1).replace(".", ""), text)
+    return text
+
+
 def classify_free_question(text: str) -> str:
     """'personal' when the question is about the asker's own circumstances, else 'generic'.
 
@@ -92,6 +142,8 @@ def classify_free_question(text: str) -> str:
     """
     # Lower-case "us" is the pronoun; "US" is the country.
     personal = _PERSONAL_RE.search(text) or re.search(r"\bus\b", text)
+    if not personal and tuning().get("hinglish_personal"):
+        personal = _HINGLISH_RE.search(text)
     return "personal" if personal else "generic"
 
 
@@ -112,6 +164,7 @@ async def answer_free(
     session: AsyncSession, case: Case, question: str, usage: dict[str, int]
 ) -> tuple[Reply, str]:
     """Free plan: generic education only. Returns (reply, category for the user message)."""
+    question = normalise_question(question)
     if classify_free_question(question) == "personal":
         return Reply(
             content=(
@@ -148,7 +201,7 @@ async def answer_free(
         reply = _generic_from_knowledge(question)
         log_fallback_call(session, service="converse", case_id=case.id, started=started)
 
-    known = {r.id for r in list_rules()}
+    known = {r.id for r in _answerable_rules()}
     reply.cited_rules = [r for r in reply.cited_rules if r in known]
     if reply.route or reply.confidence < CONFIDENCE_THRESHOLD or not reply.cited_rules:
         # Not covered by an approved rule: say so, and don't spend a free question.
@@ -179,6 +232,10 @@ _STOPWORDS = {
     "what", "whats", "does", "how", "the", "and", "for", "mean", "means", "explain", "tell",
     "about", "can", "who", "when", "why", "which", "with", "this", "that", "tax", "taxes",
     "india", "indian", "are", "is", "does", "work", "rule", "rules", "there", "under",
+    # Words every residency rule shares: on their own they don't say which rule a question
+    # is about, so they must not decide the match (found by the evaluation set).
+    "resident", "residency", "residence", "someone", "person", "individual", "make", "makes",
+    "many", "year", "years", "become", "status", "united", "states", "american",
 }
 
 
@@ -188,9 +245,15 @@ _STATUTES = {"IN-ITA": "Income-tax Act", "US-IRC": "Internal Revenue Code"}
 def _generic_from_knowledge(question: str) -> Reply:
     words = {w for w in re.findall(r"[a-z0-9]+", question.lower()) if len(w) >= 3} - _STOPWORDS
     best, best_score = None, 0
-    for rule in list_rules():
-        hay = f"{rule.id} {rule.summary} {rule.notes or ''}".lower()
+    for rule in _answerable_rules():
+        # Match on what the rule is about (its ID and summary), not its explanatory notes.
+        hay = f"{rule.id} {rule.summary}".lower()
+        names = set(re.findall(r"[a-z0-9]+", rule.id.lower()))
         score = sum(1 for w in words if w in hay)
+        # A question is about a rule only if it names it (e.g. "RNOR") or shares at least two
+        # distinctive words with it; one shared word ("days", "test") isn't enough to answer.
+        if not (words & names) and score < 2:
+            continue
         if score > best_score:
             best, best_score = rule, score
     if not best:
@@ -218,14 +281,17 @@ async def answer(session: AsyncSession, case: Case, history: list[Message], ques
         except anthropic.APIError:
             reply = None  # fall through to the deterministic responder
     if reply is None:
-        reply = _answer_deterministic(case, question)
+        from infra.schema import DocumentRequest  # local: keeps the module's import surface small
+        from sqlalchemy import select
+        requests = (await session.execute(select(DocumentRequest).where(DocumentRequest.case_id == case.id))).scalars().all()
+        reply = _answer_deterministic(case, question, list(requests))
         log_fallback_call(session, service="converse", case_id=case.id, started=started)
     return _apply_routing(case, reply)
 
 
 async def rephrase_for_customer(session: AsyncSession, case: Case, advisor: str, note: str) -> str:
     """'Reply via agent': turn an advisor's note into a customer-ready message."""
-    fallback = f"{advisor}, your case captain, asked me to pass this on: {note}"
+    fallback = f"{advisor}, your expert, asked me to pass this on: {note}"
     if not ai_enabled():
         return fallback
     try:
@@ -237,7 +303,7 @@ async def rephrase_for_customer(session: AsyncSession, case: Case, advisor: str,
                 "You are Kiyos, a cross-border tax assistant. Rewrite the advisor's internal "
                 "note as a short, warm WhatsApp-style message to the customer. Keep every fact, "
                 "number and date exactly as written; add nothing. Say it comes from "
-                f"{advisor}, their case captain. Plain text, no markdown."
+                f"{advisor}, their expert. Plain text, no markdown."
             ),
             messages=[{"role": "user", "content": scrub_pii(note)}],
             max_tokens=2000,
@@ -254,7 +320,7 @@ async def rephrase_for_customer(session: AsyncSession, case: Case, advisor: str,
 def _apply_routing(case: Case, reply: Reply) -> Reply:
     if reply.reason == "sensitive_data_guard":
         return reply
-    known = {r.id for r in list_rules()}
+    known = {r.id for r in _answerable_rules()}
     cited = [r for r in reply.cited_rules if r in known]
     unknown = [r for r in RULE_ID_RE.findall(reply.content) if r not in known]
     if unknown or len(cited) != len(reply.cited_rules):
@@ -268,7 +334,7 @@ def _apply_routing(case: Case, reply: Reply) -> Reply:
         reply.draft = reply.content
         reply.content = (
             "Thanks — this one depends on the specifics of your situation, so I've passed it "
-            f"to {case.case_captain}, your case captain, to review before we answer. "
+            f"to {case.case_captain}, your expert, to review before we answer. "
             "You'll get a reply right here, usually within one business day."
         )
     return reply
@@ -290,7 +356,7 @@ def _scrub_names(case: Case, text: str) -> str:
 def _case_snapshot(case: Case) -> str:
     lines = [
         f"Case status: {case.status}. Tax year {case.tax_year}. Jurisdictions: {case.jurisdictions}.",
-        f"Arrival date: {case.arrival_date or 'n/a'}. Case captain: {case.case_captain}.",
+        f"Arrival date: {case.arrival_date or 'n/a'}. Expert: {case.case_captain}.",
         f"Summary: {case.summary or 'n/a'}",
         "",
         "Facts (key = value [source]):",
@@ -319,8 +385,8 @@ def _case_snapshot(case: Case) -> str:
 
 
 def _system_prompt(case: Case) -> str:
-    rules = "\n".join(f"- {r.id} ({r.jurisdiction} {r.tax_year}): {r.summary.strip()}" for r in list_rules())
-    return f"""You are Kiyos, the assistant inside a cross-border (India–US) tax service, chatting with a paying customer about their own case. Their case captain is {case.case_captain}, a human tax advisor who reviews anything personal or committing.
+    rules = "\n".join(f"- {r.id} ({r.jurisdiction} {r.tax_year}): {r.summary.strip()}" for r in _answerable_rules())
+    return f"""You are Kiyos, the assistant inside a cross-border (India–US) tax service, chatting with a paying customer about their own case. Their expert is {case.case_captain}, a human tax advisor who reviews anything personal or committing.
 
 How to answer:
 - Ground every statement in the case record below, the knowledge-layer rules, or engine results from your tools. Do not use general tax knowledge to fill gaps.
@@ -423,12 +489,18 @@ def _run_tool(case: Case, name: str, args: dict[str, Any]) -> tuple[str, bool]:
 
 
 def _history_messages(case: Case, history: list[Message], question: str) -> list[dict[str, Any]]:
+    # Context per reply (scope 10b): the last 20 messages, plus a summary of anything older.
+    import memory
+
     turns: list[dict[str, Any]] = []
-    for m in history[-12:]:
+    older = memory.summarise(case, history[: -memory.RECENT]) if len(history) > memory.RECENT else None
+    if older:
+        turns.append({"role": "user", "content": _scrub_names(case, f"[Summary of the earlier conversation, for context only; facts come from tools: {older}]")})
+    for m in history[-memory.RECENT:]:
         if m.role == "system":
             continue
         role = "user" if m.role == "user" else "assistant"
-        text = m.content if m.role != "advisor" else f"[{m.author or 'Advisor'}, case captain]: {m.content}"
+        text = m.content if m.role != "advisor" else f"[{m.author or 'Advisor'}, expert]: {m.content}"
         text = _scrub_names(case, text)
         if turns and turns[-1]["role"] == role:
             turns[-1]["content"] += "\n\n" + text
@@ -446,7 +518,7 @@ def _history_messages(case: Case, history: list[Message], question: str) -> list
 
 def _generic_system_prompt() -> str:
     rules = "\n".join(
-        f"- {r.id} ({r.jurisdiction} {r.tax_year}): {r.summary.strip()}" for r in list_rules()
+        f"- {r.id} ({r.jurisdiction} {r.tax_year}): {r.summary.strip()}" for r in _answerable_rules()
     )
     return f"""You are Kiyos, answering a free-plan visitor's general India–US tax question. You have no access to their case and must not personalise.
 
@@ -511,11 +583,19 @@ async def _answer_with_claude(
 # ───────────────────────────────────────────────────────────── deterministic path
 
 
-def _filing_status(case: Case) -> dict[str, Any]:
+def _filing_status(case: Case, requests: list | None = None) -> dict[str, Any]:
     customer_todos = [i for i in case.action_items if i.assignee == "customer" and i.status != "done"]
+    pending_requests = [r for r in (requests or []) if r.status in ("pending", "rejected")]
+    # The same ask can exist as an action item and a document request: keep the request.
+    customer_todos = [i for i in customer_todos
+                      if not any(i.title.lower().split()[1:2] and i.title.lower().split()[1] in r.title.lower() for r in pending_requests)]
+    filing = [(cs.get("due"), f"{'India' if code == 'IN' else 'US'} return ({cs.get('filing', 'return')})")
+              for code, cs in (case.country_status or {}).items() if cs.get("due")]
+    # Customer-facing: what the customer must do or file. Experts' internal checks are not deadlines.
     dated = sorted(
-        [(i.due_date, i.title) for i in case.action_items if i.due_date and i.status != "done"]
-        + [(t.due_date, t.title) for t in case.topics if t.due_date and t.status != "resolved"]
+        [(i.due_date, i.title) for i in customer_todos if i.due_date]
+        + [(r.due_date, f"send {r.title}") for r in pending_requests if r.due_date]
+        + filing
         + [(n.deadline, n.subject) for n in case.notices if n.deadline and n.status != "resolved"]
     )
     today = date.today().isoformat()
@@ -525,7 +605,8 @@ def _filing_status(case: Case) -> dict[str, Any]:
         "today": today,
         "case_status": case.status,
         "open_topics": [t.title for t in case.topics if t.status != "resolved"],
-        "customer_todos": [{"title": i.title, "due": i.due_date} for i in customer_todos],
+        "customer_todos": [{"title": i.title, "due": i.due_date} for i in customer_todos]
+        + [{"title": r.title + (" (new copy needed)" if r.status == "rejected" else ""), "due": r.due_date} for r in pending_requests],
         "documents_pending_review": [d.filename for d in case.documents if d.status not in ("extracted",)],
         "next_deadline": {"date": upcoming[0][0], "what": upcoming[0][1]} if upcoming else None,
         "overdue": [{"date": d, "what": w} for d, w in overdue],
@@ -544,13 +625,47 @@ _COMMITTING = re.compile(
 )
 
 
-def _answer_deterministic(case: Case, question: str) -> Reply:
+def _nice(d: str | None) -> str:
+    try:
+        return date.fromisoformat(d[:10]).strftime("%-d %b %Y") if d else ""
+    except ValueError:
+        return d or ""
+
+
+_TOPIC_STOP = {"the", "and", "for", "with", "your", "from", "this", "that", "what", "where", "when", "stand", "status", "year", "tax"}
+
+
+def _topic_for(case: Case, q: str):
+    """The case topic a question is about: most words shared with its title, if the topic has a conclusion."""
+    words = {w for w in re.findall(r"[a-z0-9]+", q.lower()) if len(w) > 2 and w not in _TOPIC_STOP}
+    best, score = None, 0
+    for t in case.topics:
+        if not t.conclusion:
+            continue
+        title = {w for w in re.findall(r"[a-z0-9]+", f"{t.title} {t.topic_key}".lower()) if len(w) > 2 and w not in _TOPIC_STOP}
+        s = len(words & title)
+        if s > score:
+            best, score = t, s
+    return best if score >= 1 else None
+
+
+def _answer_deterministic(case: Case, question: str, requests: list | None = None) -> Reply:
     q = question.lower()
-    status = _filing_status(case)
+    status = _filing_status(case, requests)
+
+    if any(w in q for w in ("need from me", "need me", "waiting on me", "still need", "what do you need", "anything from me")):
+        todos = status["customer_todos"]
+        if not todos:
+            return Reply(content=f"Nothing is waiting on you right now. {case.case_captain} will message you here if that changes.", confidence=0.9)
+        listed = "\n".join(f"• {t['title']}" + (f" (by {_nice(t['due'])})" if t["due"] else "") for t in todos[:6])
+        return Reply(content=f"Here's what we still need from you:\n{listed}\n\nYou can upload each one from your workspace.",
+                     confidence=0.9, action=UPLOAD_ACTION)
 
     if _COMMITTING.search(q):
+        # Always the expert's call; the draft is what the record already says, if anything.
+        topic = _topic_for(case, q)
         return Reply(
-            content="This needs a judgement on your specific facts.",
+            content=f"{topic.title}: {topic.conclusion}" if topic else "This needs a judgement on your specific facts.",
             confidence=0.3,
             route=True,
             reason="Personal or committing question — needs an advisor decision.",
@@ -573,11 +688,11 @@ def _answer_deterministic(case: Case, question: str) -> Reply:
 
     if any(w in q for w in ("deadline", "due", "when is", "by when")):
         nd, overdue = status["next_deadline"], status["overdue"]
-        parts = [f"Your next deadline is {nd['date']}: {nd['what']}."] if nd else ["There's no upcoming deadline on your case."]
+        parts = [f"Your next deadline is {_nice(nd['date'])}: {nd['what']}."] if nd else ["There's no upcoming deadline on your case."]
         if overdue:
             parts.append(
                 "Past due and still open: "
-                + "; ".join(f"{o['what']} ({o['date']})" for o in overdue[:3])
+                + "; ".join(f"{o['what']} ({_nice(o['date'])})" for o in overdue[:3])
                 + f" — {case.case_captain} is on it."
             )
         return Reply(content=" ".join(parts), confidence=0.85)
@@ -585,8 +700,8 @@ def _answer_deterministic(case: Case, question: str) -> Reply:
     if any(w in q for w in ("next", "first", "to do", "todo", "action")):
         todos = status["customer_todos"]
         if not todos:
-            return Reply(content="Nothing is waiting on you right now — your case captain has the next steps.", confidence=0.85)
-        listed = "; ".join(f"{t['title']}{' (due ' + t['due'] + ')' if t['due'] else ''}" for t in todos[:4])
+            return Reply(content="Nothing is waiting on you right now — your expert has the next steps.", confidence=0.85)
+        listed = "; ".join(f"{t['title']}{' (due ' + _nice(t['due']) + ')' if t['due'] else ''}" for t in todos[:4])
         return Reply(content=f"Here's what's on your list: {listed}.", confidence=0.85)
 
     if any(w in q for w in ("rnor", "residen", "resident")):
@@ -594,7 +709,7 @@ def _answer_deterministic(case: Case, question: str) -> Reply:
             (t for t in case.topics if "rnor" in t.topic_key or "residen" in t.topic_key), None
         )
         if topic and topic.conclusion:
-            rules = [r.id for r in list_rules() if r.id.startswith("IN-RES")] if "rnor" in topic.topic_key else []
+            rules = [r.id for r in _answerable_rules() if r.id.startswith("IN-RES")] if "rnor" in topic.topic_key else []
             return Reply(
                 content=f"{topic.title}: {topic.conclusion}"
                 + (f" (rule {', '.join(rules)})" if rules else ""),
@@ -602,6 +717,14 @@ def _answer_deterministic(case: Case, question: str) -> Reply:
                 cited_rules=rules,
                 reason=None if topic.confidence in ("confirmed", "likely") else f"Topic confidence is {topic.confidence}.",
             )
+
+    topic = _topic_for(case, q)
+    if topic:
+        return Reply(
+            content=f"{topic.title}: {topic.conclusion}",
+            confidence=TOPIC_CONFIDENCE.get(topic.confidence, 0.5),
+            reason=None if topic.confidence in ("confirmed", "likely") else f"Topic confidence is {topic.confidence}.",
+        )
 
     if any(w in q for w in ("summar", "explain", "situation", "overview", "status", "assessment")):
         resolved = [t.title for t in case.topics if t.status == "resolved"]

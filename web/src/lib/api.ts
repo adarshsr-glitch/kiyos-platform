@@ -279,7 +279,3 @@ export function decideProfileChange(
   return postJson<ProfileChange>(`/profile-changes/${changeId}/decide`, { decision, by });
 }
 
-/** Prototype only: a brand-new prospect messaging Kiyos on WhatsApp. */
-export function startDemoJourney(): Promise<{ case_id: number; conversation_id: number }> {
-  return postJson(`/demo/journeys`, {});
-}

@@ -4,6 +4,8 @@ import { portalCaseId } from "@/lib/portal-case";
 import { tierOf } from "@/lib/tier";
 import { DocumentRequests } from "@/components/portal/document-requests";
 
+export const metadata = { title: "Documents · Kiyos" };
+
 export default async function DocumentsPage() {
   const id = portalCaseId();
   const caseData = await getCase(id);

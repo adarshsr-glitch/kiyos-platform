@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { COUNTRIES, sourceLabel, type PictureItem, type Section } from "@/lib/financial-picture";
+import { COUNTRIES, sourceLabel, type MoveYear, type PictureItem, type Section } from "@/lib/financial-picture";
+import { MoveYearBand } from "./home/move-year";
 import { cn } from "@/lib/utils";
 
 const SECTIONS: { key: Section; title: string; empty: string }[] = [
@@ -16,29 +17,31 @@ const SECTIONS: { key: Section; title: string; empty: string }[] = [
 export function FinancialPicture({
   items,
   editable = true,
+  move,
   className,
 }: {
   items: PictureItem[];
   editable?: boolean;
+  /** A move year: shown as a band above the rows, explaining the two salaries. */
+  move?: MoveYear | null;
   className?: string;
 }) {
   return (
     <section className={cn("rounded-xl border bg-card", className)}>
       <header className="flex items-baseline justify-between gap-3 border-b px-4 py-3">
         <div>
-          <h2 className="text-sm font-semibold text-foreground">Financial picture</h2>
-          <p className="text-xs text-muted-foreground">
-            What we hold for you, in each country&apos;s own currency
-          </p>
+          <h2 className="text-sm font-semibold text-foreground">Holdings and income</h2>
+          <p className="text-xs text-muted-foreground">By country · source of each figure</p>
         </div>
         {editable && (
-          <Link href="/portal/verify" className="shrink-0 text-xs font-medium text-primary hover:underline">
+          <Link href="/portal/profile" className="shrink-0 text-xs font-medium text-primary hover:underline">
             Correct something
           </Link>
         )}
       </header>
 
-      <div className="grid divide-y md:grid-cols-2 md:divide-x md:divide-y-0">
+      {move && <div className="border-b px-4 py-3"><MoveYearBand move={move} /></div>}
+      <div className="grid grid-cols-1 divide-y md:grid-cols-2 md:divide-x md:divide-y-0">
         {COUNTRIES.map((c) => {
           const forCountry = items.filter((i) => i.country === c.code);
           return (

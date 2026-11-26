@@ -27,6 +27,8 @@ import {
 } from "@/lib/api";
 import { initials } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { PdfAttachment } from "@/components/portal/pdf-attachment";
+import { AgentMemory } from "@/components/case/agent-memory";
 import { BookCallDialog } from "@/components/portal/book-call-dialog";
 
 const POLL_MS = 4000;
@@ -90,8 +92,8 @@ function findAnchor(messages: Message[], href?: string): Message | undefined {
   const path = href.split("?")[0];
   const linked = messages.filter((m) => m.action?.href);
   return (
-    [...linked].reverse().find((m) => m.action!.href === href) ??
-    [...linked].reverse().find((m) => m.action!.href.split("?")[0] === path)
+    [...linked].reverse().find((m) => (m.action!.target ?? m.action!.href) === href) ??
+    [...linked].reverse().find((m) => (m.action!.target ?? m.action!.href).split("?")[0] === path)
   );
 }
 
@@ -141,7 +143,10 @@ export function ChatPanel({
   fullChatHref,
   team,
   className,
+  initialInput,
 }: {
+  /** Pre-typed question (e.g. from Ask Kiyos); the customer still presses send. */
+  initialInput?: string;
   conversationId: number;
   initialMessages: Message[];
   caseClientName?: string;
@@ -180,7 +185,7 @@ export function ChatPanel({
   }>({ who: "agent", name: null });
   const [plan, setPlan] = useState<ConversationState["plan"]>("premium");
   const [usage, setUsage] = useState<FreeUsage | null>(null);
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(initialInput ?? "");
   const [sending, setSending] = useState(false);
   const [replyMode, setReplyMode] = useState<"direct" | "via_agent">("via_agent");
   const [callOpen, setCallOpen] = useState(false);
@@ -297,17 +302,25 @@ export function ChatPanel({
   const rows = useMemo(() => {
     let prevSide: string | null = null;
     let prevDay: string | null = null;
+    const isOut = (m: (typeof messages)[number]) => (advisorView ? m.role === "assistant" || m.role === "advisor" : m.role === "user");
+    // WhatsApp delivery status (from webhooks in the product): a message is read once the other
+    // side has written after it; otherwise delivered. A message still being sent is "sent".
+    const lastReply = messages.filter((m) => m.role !== "system" && !isOut(m)).reduce((a, m) => (m.created_at > a ? m.created_at : a), "");
     return messages.map((m) => {
-      const outgoing = advisorView ? m.role === "assistant" || m.role === "advisor" : m.role === "user";
+      const outgoing = isOut(m);
+      const delivery: "sent" | "delivered" | "read" = m.id > 1e12 ? "sent" : lastReply && m.created_at <= lastReply ? "read" : "delivered";
       const side = m.role === "system" ? "system" : outgoing ? "out" : `in:${m.role}:${m.author ?? ""}`;
       const day = dayLabel(m.created_at);
       const newDay = day !== prevDay;
       const first = side !== prevSide || newDay;
       prevSide = side;
       prevDay = day;
-      return { m, outgoing, first, newDay, day };
+      return { m, outgoing, first, newDay, day, delivery };
     });
   }, [messages, advisorView]);
+  // When a person (the expert) also writes in this thread, Kiyos's own messages get a
+  // sender line too, so the customer can tell the assistant and their expert apart.
+  const shared = useMemo(() => messages.some((m) => m.role === "advisor" || (m.role === "assistant" && !!m.author && m.author !== "Kiyos")), [messages]);
 
   // Compact preview: recent messages, reaching back far enough to keep the anchored one.
   const hiddenCount = useMemo(() => {
@@ -428,7 +441,7 @@ export function ChatPanel({
             {Math.max(usage.generic_limit - usage.generic_used, 0)} of {usage.generic_limit}
             {compact ? " free questions" : " general questions left"}
           </span>
-          <Link href="/portal/upgrade" className="ml-auto shrink-0 font-medium text-[var(--wa-header)] hover:underline">
+          <Link href="/portal/plans" className="ml-auto shrink-0 font-medium text-[var(--wa-header)] hover:underline">
             See plans
           </Link>
         </div>
@@ -455,14 +468,15 @@ export function ChatPanel({
           >
             <Lock className="mr-1 inline h-3 w-3 -translate-y-px" />
             {advisorView
-              ? "Customer's WhatsApp thread. Kiyos answers within its confidence limits; anything else becomes a ticket for the lead expert."
+              ? "Customer's WhatsApp thread. Kiyos answers within its confidence limits; anything else becomes a ticket for the expert."
               : compact
                 ? "Never share ID numbers or documents here."
                 : "Answers come from Kiyos's reviewed tax rules. Anything specific to you is checked by your expert. Never share ID numbers or documents here."}
           </div>
         )}
+        {advisorView && !compact && <AgentMemory conversationId={conversationId} />}
 
-        {visibleRows.map(({ m, outgoing, first, newDay, day }) => (
+        {visibleRows.map(({ m, outgoing, first, newDay, day, delivery }) => (
           <Fragment key={m.id}>
             {newDay && (
               <div className="my-2 flex justify-center">
@@ -472,8 +486,12 @@ export function ChatPanel({
             <Bubble
               m={m}
               outgoing={outgoing}
+              delivery={delivery}
+              caseId={caseId}
+              clientName={caseClientName}
               first={first}
               advisorView={advisorView}
+              shared={shared}
               anchored={m.id === anchorId}
             />
           </Fragment>
@@ -604,14 +622,22 @@ function expertLine(name: string | null, _team?: Reviewer[] | null) {
 function Bubble({
   m,
   outgoing,
+  delivery = "delivered",
+  caseId,
+  clientName,
   first,
   advisorView,
+  shared,
   anchored,
 }: {
   m: Message;
   outgoing: boolean;
+  delivery?: "sent" | "delivered" | "read";
+  caseId?: number;
+  clientName?: string;
   first: boolean;
   advisorView: boolean;
+  shared?: boolean;
   anchored?: boolean;
 }) {
   if (m.role === "system") {
@@ -625,16 +651,23 @@ function Bubble({
   }
 
   const escalated = isEscalation(m);
-  // Sender line, as in a WhatsApp Business chat answered by several agents.
+  // Sender line, as in a WhatsApp Business chat answered by several agents. A person is
+  // shown by name alone, whether they typed the message or it was sent for them (e.g. a
+  // document they accepted), so the same expert never appears under two labels.
+  const person = m.role === "advisor" || (m.role === "assistant" && !!m.author && m.author !== "Kiyos");
   const sender =
     m.role === "advisor"
-      ? `${m.author ?? "Advisor"} · Kiyos`
+      ? m.author ?? "Your expert"
       : advisorView && m.role === "assistant"
         ? m.author && m.author !== "Kiyos"
           ? m.author
           : "Kiyos assistant"
-        : !advisorView && m.role === "assistant" && m.author && m.author !== "Kiyos"
-          ? m.author
+        : !advisorView && m.role === "assistant"
+          ? m.author && m.author !== "Kiyos"
+            ? m.author
+            : shared
+              ? "Kiyos assistant"
+              : null
           : null;
 
   return (
@@ -651,8 +684,8 @@ function Bubble({
             first && (outgoing ? "rounded-tr-none" : "rounded-tl-none")
           )}
         >
-          {sender && (
-            <p className={cn("px-1 text-[12.8px] font-medium", m.role === "advisor" ? "text-[#1f7aec]" : "text-[#008069]")}>
+          {sender && first && (
+            <p className={cn("px-1 text-[12.8px] font-medium", person ? "text-[#1f7aec]" : "text-[#008069]")}>
               {sender}
             </p>
           )}
@@ -661,7 +694,7 @@ function Bubble({
               <Clock className="h-3 w-3" />
               {advisorView
                 ? `Routed to advisor${m.confidence != null ? ` · ${Math.round(m.confidence * 100)}% confidence` : ""}`
-                : "With your advisor for review"}
+                : "With your expert for review"}
             </p>
           )}
           <div className="whitespace-pre-wrap break-words px-1">
@@ -674,17 +707,20 @@ function Bubble({
               <span className="mr-1 tabular-nums">{Math.round(m.confidence * 100)}%</span>
             )}
             <span className="tabular-nums">{timeOf(m.created_at)}</span>
-            {outgoing &&
-              (m.id > 1e12 ? (
-                <Check className="h-3.5 w-3.5" />
-              ) : (
-                <CheckCheck className="h-3.5 w-3.5 text-[var(--wa-tick)]" />
-              ))}
+            {outgoing && (
+              <span className="inline-flex items-center gap-0.5" title={delivery === "read" ? "Read" : delivery === "delivered" ? "Delivered" : "Sent"}>
+                {delivery === "sent" ? <Check className="h-3.5 w-3.5" /> : <CheckCheck className={cn("h-3.5 w-3.5", delivery === "read" && "text-[var(--wa-tick)]")} />}
+                {advisorView && <span className="sr-only sm:not-sr-only sm:text-[10.5px]">{delivery === "read" ? "Read" : delivery === "delivered" ? "Delivered" : "Sent"}</span>}
+              </span>
+            )}
           </div>
         </div>
-        {m.action && !advisorView && (
+        {m.action?.type === "document" ? (
+          <PdfAttachment caseId={caseId} name={clientName} label={m.action.label} />
+        ) : m.action && !advisorView && (
           <Link
             href={m.action.href}
+            prefetch={false}
             className={cn(
               "wa-bubble mt-0.5 flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-[14px] text-[var(--wa-link)] transition-colors",
               anchored ? "bg-[#e7fce3] ring-2 ring-[#25d366]" : "bg-[var(--wa-in)] hover:bg-[#f5f6f6]"
@@ -694,12 +730,17 @@ function Bubble({
             {m.action.label}
           </Link>
         )}
+        {m.action?.token && m.action.type !== "document" && !advisorView && (
+          <p className="mt-0.5 flex items-center justify-center gap-1 text-[10.5px] text-[var(--wa-meta)]">
+            <Lock className="h-2.5 w-2.5" /> Secure link · works for {m.action.type === "pay" ? "24 hours" : "15 minutes"}
+          </p>
+        )}
         {anchored && !advisorView && (
           <p className="mt-1 rounded-full bg-[#1f2c33]/80 px-2 py-0.5 text-[11px] font-medium text-white">
             You opened this page from here
           </p>
         )}
-        {m.action && advisorView && (
+        {m.action && advisorView && m.action.type !== "document" && (
           <p className="mt-0.5 text-right text-[11px] text-[var(--wa-meta)]">Button sent: {m.action.label}</p>
         )}
       </div>

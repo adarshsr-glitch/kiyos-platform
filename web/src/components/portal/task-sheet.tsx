@@ -1,22 +1,37 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-import * as Dialog from "@radix-ui/react-dialog";
-import { Camera, Check, CircleAlert, Loader2, MessageCircle, Upload, X } from "lucide-react";
-import { decideProfileChange, uploadDocument } from "@/lib/api";
+import { SideSheet } from "@/components/side-sheet";
+import { Check, CircleAlert, Loader2, MessageCircle } from "lucide-react";
+import { decideProfileChange, sendMessage } from "@/lib/api";
+import { askCaptain } from "@/lib/residency";
+import { DocumentReader } from "@/components/document-reader";
 import type { DocumentRequest, ProfileChange } from "@/lib/types";
 import { formatDate, relativeDays } from "@/lib/format";
-import { cn } from "@/lib/utils";
-import { COUNTRY, Pill } from "./kit";
 import { profileLabel } from "./profile-labels";
 
-export type Task = { kind: "upload"; request: DocumentRequest } | { kind: "confirm"; change: ProfileChange };
+/**
+ * A message the customer writes in the panel: a reply to the expert's question (goes into their
+ * WhatsApp conversation, as if typed in Messages), or a question to the expert (becomes a
+ * ticket with a draft). Always shown, editable and sent with an explicit Send: never on one click.
+ */
+export type MessageTask = {
+  kind: "message";
+  key: string;
+  send: "reply" | "ask";
+  /** Panel title: the question being answered, or what the question is about. */
+  title: string;
+  /** What the expert asked, shown as a quote above the box. */
+  quote?: string | null;
+  prefill?: string;
+  conversationId?: number | null;
+};
 
-export const taskKey = (t: Task) => (t.kind === "upload" ? `req-${t.request.id}` : `change-${t.change.id}`);
+export type Task = { kind: "upload"; request: DocumentRequest } | { kind: "confirm"; change: ProfileChange } | MessageTask;
 
-const MAX_BYTES = 25 * 1024 * 1024;
-const ACCEPTED = /\.(pdf|jpe?g|png)$/i;
+export const taskKey = (t: Task) => (t.kind === "upload" ? `req-${t.request.id}` : t.kind === "confirm" ? `change-${t.change.id}` : t.key);
+const taskTitle = (t: Task) => (t.kind === "upload" ? t.request.title : t.kind === "confirm" ? profileLabel(t.change.fact_key) : t.title);
 
 type Phase = { name: "ready" } | { name: "busy"; file?: string } | { name: "done"; text: string } | { name: "error"; title: string; text: string };
 
@@ -44,30 +59,36 @@ export function TaskSheet({
   onNext?: (t: Task) => void;
 }) {
   return (
-    <Dialog.Root open={!!task} onOpenChange={(open) => !open && onClose()}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40" />
-        <Dialog.Content
-          aria-describedby={undefined}
-          className="fixed inset-x-0 bottom-0 z-50 max-h-[90vh] overflow-y-auto rounded-t-2xl bg-card px-5 pb-[calc(1.5rem+env(safe-area-inset-bottom))] pt-3 shadow-xl focus:outline-none sm:inset-y-0 sm:left-auto sm:right-0 sm:max-h-none sm:w-[440px] sm:rounded-none sm:rounded-l-2xl sm:px-6 sm:pt-6"
-        >
-          <span aria-hidden className="mx-auto mb-3 block h-1 w-10 rounded-full bg-border sm:hidden" />
-          {task && (
-            <TaskBody
-              key={taskKey(task)}
-              task={task}
-              next={next ?? null}
-              caseId={caseId}
-              by={by}
-              lead={lead}
-              fromWhatsApp={fromWhatsApp}
-              onClose={onClose}
-              onNext={onNext}
-            />
-          )}
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+    // The same right-hand panel as every other detail on the customer side (one-panel rule).
+    <SideSheet
+      open={!!task}
+      onClose={onClose}
+      eyebrow={
+        fromWhatsApp
+          ? "From your WhatsApp link"
+          : task?.kind === "upload"
+            ? "Upload a document"
+            : task?.kind === "confirm"
+              ? "Confirm a change to your details"
+              : task?.send === "reply"
+                ? `Reply to ${lead.split(" ")[0]}`
+                : `Ask ${lead.split(" ")[0]}`
+      }
+      title={task ? taskTitle(task) : ""}
+    >
+      {task && (
+        <TaskBody
+          key={taskKey(task)}
+          task={task}
+          next={next ?? null}
+          caseId={caseId}
+          by={by}
+          lead={lead}
+          onClose={onClose}
+          onNext={onNext}
+        />
+      )}
+    </SideSheet>
   );
 }
 
@@ -77,7 +98,6 @@ function TaskBody({
   caseId,
   by,
   lead,
-  fromWhatsApp,
   onClose,
   onNext,
 }: {
@@ -86,29 +106,12 @@ function TaskBody({
   caseId: number;
   by: string;
   lead: string;
-  fromWhatsApp?: boolean;
   onClose: () => void;
   onNext?: (t: Task) => void;
 }) {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>({ name: "ready" });
 
-  const header = (
-    <div className="flex items-start gap-3">
-      <div className="min-w-0 flex-1">
-        <p className="text-xs font-medium text-muted-foreground">
-          {fromWhatsApp ? "From your WhatsApp link" : task.kind === "upload" ? "Upload a document" : "Confirm a change to your details"}
-        </p>
-        <Dialog.Title className="mt-0.5 text-xl font-semibold leading-snug text-foreground">
-          {task.kind === "upload" ? task.request.title : profileLabel(task.change.fact_key)}
-        </Dialog.Title>
-      </div>
-      <Dialog.Close className="-mr-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted">
-        <X className="h-5 w-5" />
-        <span className="sr-only">Close</span>
-      </Dialog.Close>
-    </div>
-  );
 
   if (phase.name === "done") {
     return (
@@ -117,16 +120,16 @@ function TaskBody({
           <span className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
             <Check className="h-7 w-7" strokeWidth={2.5} />
           </span>
-          <Dialog.Title className="text-xl font-semibold text-foreground">
-            {task.kind === "upload" ? "Received" : "Saved"}
-          </Dialog.Title>
+          <p className="text-xl font-semibold text-foreground">
+            {task.kind === "upload" ? "Received" : task.kind === "message" ? "Sent" : "Saved"}
+          </p>
           <p className="text-sm text-muted-foreground">{phase.text}</p>
         </div>
         {next && onNext && (
           <div className="space-y-2 rounded-xl border p-4">
             <p className="text-xs font-medium text-muted-foreground">Next thing that needs you</p>
             <p className="text-[15px] font-semibold text-foreground">
-              {next.kind === "upload" ? next.request.title : `Confirm: ${profileLabel(next.change.fact_key)}`}
+              {next.kind === "confirm" ? `Confirm: ${taskTitle(next)}` : taskTitle(next)}
             </p>
             {next.kind === "upload" && next.request.due_date && (
               <p className="text-[13px] text-muted-foreground">{dueText(next.request.due_date)}</p>
@@ -135,7 +138,7 @@ function TaskBody({
               onClick={() => onNext(next)}
               className="mt-1 inline-flex min-h-11 items-center rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground"
             >
-              {next.kind === "upload" ? "Upload it now" : "Review change"}
+              {next.kind === "upload" ? "Upload it now" : next.kind === "confirm" ? "Review change" : next.send === "reply" ? "Reply now" : "Write it now"}
             </button>
           </div>
         )}
@@ -148,23 +151,44 @@ function TaskBody({
 
   return (
     <div className="space-y-5">
-      {header}
       {task.kind === "upload" ? (
-        <UploadBody
-          request={task.request}
+        <div className="space-y-4">
+          <p className="text-[13px] text-muted-foreground">{task.request.why}</p>
+          <DocumentReader
+            caseId={caseId}
+            docType={task.request.doc_type}
+            requestId={task.request.id}
+            onDone={() => router.refresh()}
+          />
+          <button onClick={onClose} className="flex min-h-11 w-full items-center justify-center rounded-lg border text-sm font-semibold text-foreground hover:bg-muted">
+            Close
+          </button>
+        </div>
+      ) : task.kind === "message" ? (
+        <MessageBody
+          task={task}
           lead={lead}
           phase={phase}
-          onUpload={async (file) => {
-            const problem = checkFile(file);
-            if (problem) return setPhase({ name: "error", ...problem });
-            setPhase({ name: "busy", file: file.name });
+          onSend={async (text) => {
+            setPhase({ name: "busy" });
             try {
-              await uploadDocument(caseId, file, task.request.doc_type, task.request.id);
-              setPhase({ name: "done", text: `${file.name}. ${lead} will check it, and we'll confirm on WhatsApp once it's accepted. Nothing else is needed for this item.` });
+              if (task.send === "reply") {
+                if (!task.conversationId) throw new Error("Your conversation isn't open yet. Reply on WhatsApp instead.");
+                await sendMessage(task.conversationId, text);
+              } else {
+                await askCaptain(caseId, text, by);
+              }
+              const first = lead.split(" ")[0];
+              setPhase({
+                name: "done",
+                text:
+                  task.send === "reply"
+                    ? `${first} sees it in your conversation. It's in your Messages and on WhatsApp too.`
+                    : `${first} has it, with your file. You'll get the answer in Messages and on WhatsApp.`,
+              });
               router.refresh();
             } catch (e) {
-              const detail = e instanceof Error && "detail" in e ? String((e as { detail: unknown }).detail) : null;
-              setPhase({ name: "error", title: "The upload didn't finish", text: detail || "Nothing was saved. Check your connection and try again." });
+              setPhase({ name: "error", title: "That didn't send", text: e instanceof Error ? e.message : "Try again in a moment." });
             }
           }}
         />
@@ -195,95 +219,41 @@ function TaskBody({
   );
 }
 
-function UploadBody({
-  request: r,
-  lead,
-  phase,
-  onUpload,
-}: {
-  request: DocumentRequest;
-  lead: string;
-  phase: Phase;
-  onUpload: (file: File) => void;
-}) {
-  const fileInput = useRef<HTMLInputElement>(null);
-  const cameraInput = useRef<HTMLInputElement>(null);
-  const [dragging, setDragging] = useState(false);
+function MessageBody({ task, lead, phase, onSend }: { task: MessageTask; lead: string; phase: Phase; onSend: (text: string) => void }) {
+  const [text, setText] = useState(task.prefill ?? "");
   const busy = phase.name === "busy";
-  const take = (files: FileList | null) => {
-    const file = files?.[0];
-    if (file) onUpload(file);
-    if (fileInput.current) fileInput.current.value = "";
-    if (cameraInput.current) cameraInput.current.value = "";
-  };
-
+  const first = lead.split(" ")[0];
   return (
     <>
-      <div className="flex flex-wrap items-center gap-2 text-[13px] text-muted-foreground">
-        {r.status === "rejected" && <Pill tone="amber">Needs a new copy</Pill>}
-        {r.due_date && <span>{dueText(r.due_date)}</span>}
-        {r.country && <span>· {COUNTRY[r.country].name}</span>}
-      </div>
-
-      {r.status === "rejected" && r.rejection_reason && (
-        <p className="rounded-lg bg-amber-50 px-3.5 py-3 text-sm text-amber-950">{r.rejection_reason}</p>
-      )}
-
-      <dl className="space-y-3 text-sm">
-        <div>
-          <dt className="text-xs font-semibold text-muted-foreground">Why we need it</dt>
-          <dd className="mt-0.5 text-foreground">{r.why}</dd>
-        </div>
-        <div>
-          <dt className="text-xs font-semibold text-muted-foreground">What happens next</dt>
-          <dd className="mt-0.5 text-foreground">{lead} checks it, and we confirm on WhatsApp when it&apos;s accepted.</dd>
-        </div>
-      </dl>
-
-      {phase.name === "error" && <ErrorBox title={phase.title} text={phase.text} />}
-
-      {busy ? (
-        <div role="status" className="flex items-center gap-3 rounded-xl border p-4 text-sm">
-          <Loader2 className="h-5 w-5 animate-spin text-primary" />
-          <span className="min-w-0 flex-1">
-            <span className="block truncate font-medium text-foreground">{phase.file}</span>
-            <span className="text-muted-foreground">Uploading… keep this page open until it finishes.</span>
+      {task.quote && (
+        <p className="flex gap-2 rounded-lg border px-3 py-2.5 text-[13.5px] text-foreground">
+          <MessageCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span>
+            “{task.quote}” <span className="text-muted-foreground">· {first}</span>
           </span>
-        </div>
-      ) : (
-        <div
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDragging(true);
-          }}
-          onDragLeave={() => setDragging(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            setDragging(false);
-            take(e.dataTransfer.files);
-          }}
-          className={cn("space-y-2 rounded-xl sm:border-2 sm:border-dashed sm:p-4", dragging ? "sm:border-primary sm:bg-primary/5" : "sm:border-border")}
-        >
-          <p className="hidden text-center text-sm text-muted-foreground sm:block">Drop the file here, or</p>
-          <button
-            onClick={() => cameraInput.current?.click()}
-            className="flex min-h-12 w-full items-center justify-center gap-2 rounded-lg bg-primary text-sm font-semibold text-primary-foreground sm:hidden"
-          >
-            <Camera className="h-4 w-4" /> Take a photo
-          </button>
-          <button
-            onClick={() => fileInput.current?.click()}
-            className="flex min-h-12 w-full items-center justify-center gap-2 rounded-lg border border-primary text-sm font-semibold text-primary sm:bg-primary sm:text-primary-foreground"
-          >
-            <Upload className="h-4 w-4" /> Choose a file
-          </button>
-        </div>
+        </p>
       )}
-      <p className="text-center text-xs text-muted-foreground">
-        PDF, JPG or PNG, up to 25 MB. It goes to your Kiyos workspace, never to WhatsApp.
-      </p>
-      <input ref={fileInput} type="file" accept=".pdf,.jpg,.jpeg,.png" className="hidden" onChange={(e) => take(e.target.files)} />
-      <input ref={cameraInput} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => take(e.target.files)} />
+      <label className="block">
+        <span className="text-xs font-semibold text-muted-foreground">{task.send === "reply" ? "Your reply" : `Your question to ${first}`}</span>
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={5}
+          autoFocus
+          placeholder={task.send === "reply" ? "Write your answer" : "What would you like to know?"}
+          className="mt-1 w-full rounded-lg border bg-background p-3 text-[14px] leading-relaxed"
+        />
+      </label>
+      {phase.name === "error" && <ErrorBox title={phase.title} text={phase.text} />}
+      <button
+        onClick={() => onSend(text.trim())}
+        disabled={busy || !text.trim()}
+        className="flex min-h-12 w-full items-center justify-center gap-2 rounded-lg bg-primary text-sm font-semibold text-primary-foreground disabled:opacity-50"
+      >
+        {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+        {busy ? "Sending…" : `Send to ${first}`}
+      </button>
+      <p className="text-center text-xs text-muted-foreground">It appears in your Messages and on WhatsApp.</p>
     </>
   );
 }
@@ -365,20 +335,6 @@ function ErrorBox({ title, text }: { title: string; text: string }) {
       </span>
     </div>
   );
-}
-
-function checkFile(file: File) {
-  if (!ACCEPTED.test(file.name)) {
-    return { title: "This file type can't be uploaded", text: `${file.name} isn't a PDF, JPG or PNG. Save or export it as one of those and try again.` };
-  }
-  if (file.size > MAX_BYTES) {
-    const mb = Math.ceil(file.size / (1024 * 1024));
-    return {
-      title: "This file is too large to upload",
-      text: `${file.name} is ${mb} MB. Files can be up to 25 MB. Try a lower-resolution scan, or a photo of each page.`,
-    };
-  }
-  return null;
 }
 
 export function dueText(date: string) {

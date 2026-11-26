@@ -1,0 +1,42 @@
+id: US-RES-GREEN-CARD
+jurisdiction: US
+tax_year: "2026"
+
+sources:
+  - id: US-IRC-7701B
+    section: "7701(b)(1)(A)(i)"
+    passage: >-
+      An alien is a resident of the United States for a calendar year if the
+      individual is a lawful permanent resident of the United States at any
+      time during that year.
+
+summary: >-
+  Holding a green card at any time in the calendar year makes the person a US
+  resident for tax purposes (the green card test).
+
+inputs:
+  - name: green_card_in_year
+    type: boolean
+    description: Lawful permanent resident at any time during the calendar year.
+
+logic:
+  kind: flag
+  input: green_card_in_year
+  equals: true
+  returns:
+    true: RESIDENT
+    false: NOT_RESIDENT_BY_THIS_TEST
+
+status: pending_validation
+
+notes: >-
+  Prototype rule pending validation. First- and last-year residency periods
+  (dual-status years) are handled in the residency service.
+
+test_cases:
+  - name: "Green card holder"
+    inputs: { green_card_in_year: true }
+    expected: true
+  - name: "No green card"
+    inputs: { green_card_in_year: false }
+    expected: false

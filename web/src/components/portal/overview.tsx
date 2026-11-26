@@ -1,350 +1,357 @@
-import { MessageCircle } from "lucide-react";
-import type { CaseDetail, CountryStatus, DocumentRequest, ProfileChange, Reviewer, Ticket } from "@/lib/types";
-import { formatDate, initials, relativeDays } from "@/lib/format";
-import { cn } from "@/lib/utils";
-import { whatsappHref } from "@/lib/whatsapp";
-import { ArrowLink, COUNTRY, PageHeader, Section } from "./kit";
-import { NeedsYou, type Todo } from "./needs-you";
+import Link from "next/link";
+import type { CaseDetail, DocumentRequest, ProfileChange } from "@/lib/types";
+import { formatDate } from "@/lib/format";
+import type { Residency } from "@/lib/residency";
+import { COUNTRY_NAME, estimatesOf, positionOf, STATUS_SHORT, type Code, type CountryPositionData } from "@/lib/position";
 import { profileLabel } from "./profile-labels";
-
-interface Work {
-  id: string;
-  title: string;
-  owner: string;
-  next: string | null;
-  note?: string;
-}
-
-const today = () => new Date().toISOString().slice(0, 10);
-
-function addBusinessDay(iso: string) {
-  const d = new Date(iso);
-  do d.setDate(d.getDate() + 1);
-  while (d.getDay() === 0 || d.getDay() === 6);
-  return d.toISOString();
-}
+import { MessageAlert } from "./inbox";
+import { hasCaptain } from "@/lib/captain";
+import type { Briefing, Saving } from "@/lib/residency";
+import { cn } from "@/lib/utils";
+import { SinceLastVisit, WayToSave } from "./home/from-expert";
+import { NeedsNow, type ExpertItem, type NeedItem } from "./home/needs-now";
+import { DueLine, PositionFigure, SetBy } from "./position-figure";
+import { CountryCode, Segs, StepRail, TurnChip, type Step } from "./visual";
 
 /**
- * PRD §6 Overview, ordered per Review 02 (CD-03): what needs you, where you stand, what Kiyos is
- * doing, then filing deadlines. Desktop adds a side panel with the team and deadlines.
+ * Customer Overview, built from the customer's questions in order (canvas "Kiyos dashboards",
+ * visual language sheet):
+ *   1. Am I OK? One figure per country with a paid / left bar, and who set it.
+ *   2. Is it moving? Each return as whose turn it is plus a step rail.
+ *   3. What do I do? What needs you, each with what happens after, beside a way to save and
+ *      what changed since the last visit.
+ *   4. What's ahead? Today to the last return date on one line.
+ * Shapes replace sentences; explanations open in the side panel. Only links (→) change page.
+ * Kiyos never works out tax: every figure is the expert's own entry.
  */
+
+const todayIso = () => new Date().toISOString().slice(0, 10);
+const DAY = 86_400_000;
+const daysBetween = (a: string, b: string) => Math.round((Date.parse(b + "T00:00:00Z") - Date.parse(a + "T00:00:00Z")) / DAY);
+const short = (d: string) => formatDate(d, { day: "numeric", month: "short" });
+const long = (d: string) => formatDate(d, { day: "numeric", month: "short", year: "numeric" });
+const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
+
 export function Overview({
   caseData,
   requests,
   changes,
-  tickets,
+  residency,
+  briefing = null,
+  savings = [],
 }: {
   caseData: CaseDetail;
   requests: DocumentRequest[];
   changes: ProfileChange[];
-  tickets: Ticket[];
+  residency?: Residency | null;
+  briefing?: Briefing | null;
+  savings?: Saving[];
 }) {
   const first = caseData.client_name.split(" ")[0];
   const lead = caseData.case_captain;
+  const captained = hasCaptain(lead);
+  const leadFirst = captained ? lead.split(" ")[0] : "Kiyos";
+  const today = todayIso();
 
-  const todos: (Todo & { urgent: boolean })[] = [
+  const positions: Record<Code, CountryPositionData> = { IN: positionOf(caseData, residency, "IN"), US: positionOf(caseData, residency, "US") };
+  const filingOf = (c: Code) => positions[c].filing?.split(" + ")[0] ?? null;
+  const forCountry = (c: Code) => requests.filter((r) => r.country === c || r.country === "BOTH");
+  const open = (r: DocumentRequest) => r.status === "pending" || r.status === "rejected";
+
+  /* ---------------------------------------------------------------- needs you, with what happens after */
+  const items: (NeedItem & { urgent: boolean })[] = [
     ...changes
       .filter((c) => c.status === "proposed")
       .map((c) => ({
         id: `change-${c.id}`,
-        title: "Confirm a change to your details",
-        detail: `${profileLabel(c.fact_key)}: ${formatValue(c.fact_key, c.proposed_value)}, from your WhatsApp message on ${formatDate(c.created_at, { day: "numeric", month: "short" })}`,
-        why: c.affects,
+        title: `Confirm ${lowerFirst(profileLabel(c.fact_key))}: ${formatValue(c.fact_key, c.proposed_value)}`,
+        detail: `You told us on WhatsApp on ${short(c.created_at)}. Nothing changes until you confirm.`,
         due: null,
         cta: "Review change",
         task: { kind: "confirm" as const, change: c },
+        after: ["You confirm", `${leadFirst} reviews`, "Your profile updates"],
         urgent: true,
       })),
-    ...requests
-      .filter((r) => r.status === "pending" || r.status === "rejected")
-      .map((r) => ({
+    ...requests.filter(open).map((r) => {
+      const c = r.country === "IN" || r.country === "US" ? r.country : null;
+      const lastForCountry = c ? forCountry(c).filter(open).length === 1 : false;
+      return {
         id: `req-${r.id}`,
         title: r.title,
         detail: r.status === "rejected" ? r.rejection_reason : null,
-        why: r.why,
         due: r.due_date,
         country: r.country,
         rejected: r.status === "rejected",
         cta: r.status === "rejected" ? "Upload new copy" : "Upload",
         task: { kind: "upload" as const, request: r },
-        urgent: r.status === "rejected",
-      })),
+        after: [
+          "You upload",
+          `${leadFirst} checks`,
+          c && lastForCountry ? `${c === "IN" ? "India" : "US"} documents complete` : c && filingOf(c) ? `Counts toward your ${filingOf(c)}` : "Added to your file",
+        ],
+        urgent: r.status === "rejected" || (!!r.due_date && r.due_date < today),
+      };
+    }),
     ...caseData.action_items
       .filter((i) => i.assignee === "customer" && i.status !== "done")
-      .filter((i) => !requests.some((r) => i.title.toLowerCase().includes(r.title.toLowerCase().split(" ")[0])))
+      // Skip items that only repeat a document request; an expert's question is never one.
+      .filter((i) => i.notes === "clarification" || !requests.some((r) => i.title.toLowerCase().includes(r.title.toLowerCase())))
       .map((i) => ({
         id: `item-${i.id}`,
         title: i.title,
-        detail: i.status === "blocked" ? "Waiting on something else first" : i.notes,
+        detail: i.status === "blocked" ? "Waiting on something else first" : null,
         due: i.due_date,
-        cta: "Reply on WhatsApp",
-        href: whatsappHref,
-        urgent: false,
+        cta: "Reply",
+        // Answered in the side panel, into the same WhatsApp conversation as Messages.
+        task: { kind: "message" as const, key: `item-${i.id}`, send: "reply" as const, title: i.title, conversationId: caseData.conversation_id ?? null },
+        after: ["You answer", `${leadFirst} reads it`, `Back with ${leadFirst}`],
+        urgent: i.notes === "clarification",
       })),
   ];
-  todos.sort((a, b) => Number(b.urgent) - Number(a.urgent) || (a.due ?? "9999").localeCompare(b.due ?? "9999"));
+  // Changes to confirm come first (they hold up the residency check), then by date.
+  const isConfirm = (t: NeedItem) => t.task?.kind === "confirm";
+  items.sort((a, b) => Number(isConfirm(b)) - Number(isConfirm(a)) || (a.due ?? "9999").localeCompare(b.due ?? "9999") || Number(b.urgent) - Number(a.urgent));
 
-  const work: Work[] = [
-    ...tickets
-      .filter((t) => t.status === "open")
-      .map((t) => ({
-        id: `ticket-${t.id}`,
-        title: `Your question: “${t.question}”`,
-        owner: t.owner ?? lead,
-        next: t.sla_due_at,
-        note: "Reviewed answer on WhatsApp",
-      })),
-    ...caseData.topics
-      .filter((t) => t.status !== "resolved" && t.owner && !t.owner.startsWith(first))
-      .map((t) => ({ id: `topic-${t.id}`, title: t.title, owner: t.owner!, next: t.due_date, note: t.next_action ?? undefined })),
-    ...caseData.action_items
-      .filter((i) => i.assignee !== "customer" && i.status !== "done")
-      .map((i) => ({ id: `ai-${i.id}`, title: i.title, owner: i.owner ?? lead, next: i.due_date })),
-  ];
-  if (work.length === 0 && caseData.activated_at) {
-    work.push({
-      id: "kickoff",
-      title: "Turning your initial scan into a checklist and plan",
-      owner: lead,
-      next: addBusinessDay(caseData.activated_at),
-      note: "First update on WhatsApp",
-    });
-  }
+  const withExpert: ExpertItem[] = caseData.action_items
+    .filter((i) => i.assignee === "advisor" && i.status !== "done")
+    .sort((a, b) => (a.due_date ?? "9999").localeCompare(b.due_date ?? "9999"))
+    .map((i) => ({ id: i.id, title: i.title, due: i.due_date }));
 
-  const status = caseData.country_status ?? {};
-  // CD-04: statutory and filing dates only. Document due dates stay on their task rows, and a
-  // filing deadline is never pushed off the list by a cap.
-  const deadlines = (["IN", "US"] as const)
-    .filter((c) => status[c] && status[c]!.due >= today())
-    .map((c) => ({ date: status[c]!.due, country: c, filing: status[c]!.filing }))
+  const thisWeek = items.filter((t) => t.due && daysBetween(today, t.due) <= 7).length;
+  const headline =
+    items.length === 0
+      ? "Nothing needs you right now."
+      : thisWeek > 0
+        ? `${thisWeek} ${plural(thisWeek, "thing needs", "things need")} you this week.`
+        : `${items.length} ${plural(items.length, "thing needs", "things need")} you.`;
+
+  /* ---------------------------------------------------------------- who set the figures */
+  const estimates = Object.values(estimatesOf(caseData.facts));
+  // Only a name the record holds; the latest date across countries.
+  const setBy = estimates.find((e) => e?.enteredBy)?.enteredBy ?? null;
+  const setOn = estimates.map((e) => e?.enteredOn ?? "").sort().at(-1) || null;
+
+  return (
+    <div className="space-y-7">
+      <section className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-[26px] font-semibold tracking-[-0.01em] text-foreground">
+            {greeting()}, {first}
+          </h1>
+          <p className="mt-1.5 text-[15px]">
+            <span className={cn("font-semibold", items.length ? "text-[#7A3F06]" : "text-foreground")}>{headline}</span>
+            {captained && items.length > 0 && <span className="text-muted-foreground"> Everything else is with {leadFirst}.</span>}
+          </p>
+        </div>
+        {estimates.length > 0 && <SetBy name={setBy} on={setOn} illustrative={estimates.some((e) => e?.illustrative)} />}
+      </section>
+
+      <MessageAlert />
+
+      {/* 1. Am I OK? */}
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-2">
+        {(["IN", "US"] as const).map((c) => (
+          <PositionCard key={c} p={positions[c]} filing={filingOf(c)} lead={leadFirst} today={today} />
+        ))}
+      </div>
+
+      {/* 2. Is it moving? */}
+      <section aria-labelledby="h-returns" className="overflow-hidden rounded-[14px] border bg-card">
+        <div className="flex items-baseline justify-between gap-4 px-[22px] pb-3 pt-4">
+          <h2 id="h-returns" className="text-[16px] font-semibold text-foreground">
+            Your returns
+          </h2>
+          <Link href="/portal/tax-position" className="text-[13px] font-medium text-primary hover:underline">
+            Tax position →
+          </Link>
+        </div>
+        {(["IN", "US"] as const).map((c) => {
+          const p = positions[c];
+          const reqs = forCountry(c);
+          const pending = reqs.filter(open);
+          const accepted = reqs.filter((r) => r.status === "reviewed").length;
+          const yours = pending.length > 0;
+          const steps: Step[] = [
+            {
+              state: p.reviewedBy && !p.reviewStale ? "done" : p.status ? "now" : "next",
+              title: "Residency",
+              sub: p.status ? `${STATUS_SHORT[p.status] ?? p.status}${!p.reviewedBy ? " · in review" : p.reviewStale ? " · rechecking" : ""}` : "Not settled yet",
+            },
+            {
+              state: reqs.length === 0 ? "next" : accepted === reqs.length ? "done" : "now",
+              yours,
+              title: "Documents",
+              sub:
+                reqs.length === 0 ? (
+                  "None asked yet"
+                ) : (
+                  <span className="flex items-center gap-1.5">
+                    <Segs done={accepted} total={reqs.length} pendingTone={yours ? "amber" : "none"} />
+                    <span className="tabular-nums">
+                      {accepted}/{reqs.length}
+                    </span>
+                  </span>
+                ),
+            },
+            { state: p.stage && /filed|submitted/i.test(p.stage) ? "done" : "next", title: "Return due", sub: p.due ? long(p.due) : "Not set yet" },
+          ];
+          return (
+            <div key={c} className="grid grid-cols-[minmax(0,1fr)] items-center gap-3 border-t px-[22px] py-4 md:grid-cols-[170px_240px_minmax(0,1fr)] md:gap-6">
+              <div>
+                <p className="flex items-center gap-2 text-[14px] font-semibold text-foreground">
+                  <CountryCode code={c} />
+                  {filingOf(c) ?? COUNTRY_NAME[c]}
+                </p>
+                {p.stage && <p className="mt-1 text-[12px] text-muted-foreground">Stage: {p.stage}</p>}
+              </div>
+              <div className="flex flex-col items-start gap-1.5">
+                {yours ? <TurnChip yours name={caseData.client_name} /> : <TurnChip yours={false} name={captained ? lead : "Kiyos"} />}
+                <span className="text-[13px] text-muted-foreground">{yours ? `Waiting on: ${pending[0].title}` : "Nothing needed from you"}</span>
+              </div>
+              <StepRail label={`${COUNTRY_NAME[c]} return steps`} steps={steps} />
+            </div>
+          );
+        })}
+      </section>
+
+      {/* 3. What do I do? */}
+      <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-5 xl:grid-cols-[minmax(0,7fr)_minmax(0,4fr)]">
+        <NeedsNow items={items} withExpert={captained ? withExpert : []} caseId={caseData.id} by={caseData.client_name} lead={captained ? lead : "Kiyos"} />
+        {captained && (
+          <aside className="flex min-w-0 flex-col gap-5">
+            <WayToSave savings={savings} expert={lead} caseId={caseData.id} customer={caseData.client_name} />
+            <SinceLastVisit briefing={briefing} expert={lead} />
+          </aside>
+        )}
+      </div>
+
+      {/* 4. What's ahead? */}
+      <Ahead items={items} positions={positions} today={today} />
+    </div>
+  );
+}
+
+/* ================================================================ pieces */
+
+/** One country's position: the expert's figure as the headline, one bar, a legend that carries the numbers, the due date. */
+function PositionCard({ p, filing, lead, today }: { p: CountryPositionData; filing: string | null; lead: string; today: string }) {
+  return (
+    <article className="flex flex-col rounded-[14px] border bg-card px-[22px] pt-5">
+      <p className="mb-3.5 flex flex-wrap items-center gap-2 text-[13.5px]">
+        <CountryCode code={p.code} />
+        <span className="font-semibold text-foreground">{COUNTRY_NAME[p.code]}</span>
+        <span className="text-muted-foreground">{[p.year, filing].filter(Boolean).join(" · ")}</span>
+      </p>
+      {p.estimate ? (
+        <PositionFigure p={p} />
+      ) : (
+        <>
+          <p className="font-serif text-[22px] text-muted-foreground">Not set yet</p>
+          <p className="mt-1 pb-4 text-[13px] text-muted-foreground">{lead} adds this figure once your documents are in.</p>
+        </>
+      )}
+      {p.due && (
+        <div className="mt-4 border-t py-3">
+          <DueLine p={p} filing={filing} today={today} />
+        </div>
+      )}
+    </article>
+  );
+}
+
+/** Today to the last return date on one line: amber for what needs the customer, dark for return dates. */
+function Ahead({ items, positions, today }: { items: NeedItem[]; positions: Record<Code, CountryPositionData>; today: string }) {
+  const returns = (["IN", "US"] as const)
+    .filter((c) => positions[c].due && positions[c].due! >= today)
+    .map((c) => ({ date: positions[c].due!, label: `${c === "IN" ? "India" : "US"} return due` }))
     .sort((a, b) => a.date.localeCompare(b.date));
-  const nextDeadline = [...todos.map((t) => t.due), ...deadlines.map((d) => d.date)]
-    .filter((d): d is string => !!d && d >= today())
-    .sort()[0];
+  const mine = items.filter((t) => t.due).map((t) => t.due!);
+  if (returns.length === 0 && mine.length === 0) return null;
+  const end = [...returns.map((r) => r.date), ...mine, today].sort().at(-1)!;
+  const span = Math.max(30, daysBetween(today, end));
+  const x = (d: string) => Math.min(100, Math.max(0, (daysBetween(today, d) / span) * 100));
 
-  const team = teamOf(caseData.reviewers, lead);
+  // The customer's own dates read as one labelled group when they sit close together; every group is labelled.
+  const mineSorted = [...mine].sort();
+  const groups: string[][] = [];
+  for (const d of mineSorted) {
+    const g = groups[groups.length - 1];
+    if (g && x(d) - x(g[0]) < 10) g.push(d);
+    else groups.push([d]);
+  }
+  const groupLabel = (g: string[]) =>
+    g
+      .map((d) => (d < today ? "Overdue" : short(d)))
+      .filter((v, i, all) => all.indexOf(v) === i)
+      .join(" · ");
+
+  const months: { x: number; label: string }[] = [];
+  const cur = new Date(today + "T00:00:00Z");
+  cur.setUTCDate(1);
+  cur.setUTCMonth(cur.getUTCMonth() + 1);
+  while (cur.toISOString().slice(0, 10) <= end) {
+    const iso = cur.toISOString().slice(0, 10);
+    months.push({ x: x(iso), label: cur.toLocaleDateString("en-GB", { month: "short", timeZone: "UTC" }) + (cur.getUTCMonth() === 0 ? ` ${String(cur.getUTCFullYear()).slice(2)}` : "") });
+    cur.setUTCMonth(cur.getUTCMonth() + 1);
+  }
+  const every = months.length > 9 ? 2 : 1;
+  const place = (pos: number) => (pos > 80 ? { right: `${100 - pos}%`, textAlign: "right" as const } : { left: `${pos}%` });
 
   return (
-    <div>
-      <PageHeader
-        title={`${greeting()}, ${first}`}
-        meta={
-          <>
-            <span className="font-semibold text-foreground">
-              {todos.length ? `${todos.length} thing${todos.length > 1 ? "s" : ""} need${todos.length > 1 ? "" : "s"} you` : "Nothing needs you"}
-            </span>
-            {nextDeadline && ` · next deadline ${formatDate(nextDeadline, { day: "numeric", month: "short" })}`}
-          </>
-        }
-      />
-
-      <ExpertLine lead={team.lead} className="-mt-2 mb-5 lg:hidden" />
-
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
-        <div className="min-w-0 space-y-5">
-          <NeedsYou todos={todos} caseId={caseData.id} by={caseData.client_name} lead={lead} />
-
-          <Section title="Your position" action={<ArrowLink href="/portal/assessment">Tax position</ArrowLink>} flush>
-            <ul className="divide-y sm:grid sm:grid-cols-2 sm:divide-x sm:divide-y-0">
-              {(["IN", "US"] as const).map((c) => (
-                <PositionRow key={c} code={c} status={status[c]} reviewers={caseData.reviewers} lead={lead} />
-              ))}
-            </ul>
-          </Section>
-
-          <Section title="Kiyos is on it" count={work.length} flush>
-            <ul className="divide-y">
-              {work.map((w) => (
-                <li key={w.id} className="flex items-start gap-3 px-5 py-3">
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-semibold text-primary" title={w.owner}>
-                    {initials(w.owner)}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[14px] text-foreground">{w.title}</p>
-                    <p className="line-clamp-1 text-[12.5px] text-muted-foreground">
-                      {w.owner}
-                      {w.note ? ` · ${w.note}` : ""}
-                    </p>
-                  </div>
-                  {w.next && (
-                    <div className="shrink-0 text-right">
-                      <p className="text-[11px] text-muted-foreground">Next update</p>
-                      <p className={cn("text-xs font-medium tabular-nums", w.next.slice(0, 10) < today() ? "text-rose-600" : "text-foreground")}>
-                        {formatDate(w.next, { day: "numeric", month: "short" })}
-                      </p>
-                    </div>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </Section>
-
-          <Deadlines deadlines={deadlines} className="lg:hidden" />
-        </div>
-
-        <aside className="hidden space-y-5 lg:block">
-          <TeamPanel team={team} />
-          <Deadlines deadlines={deadlines} />
-        </aside>
+    <section aria-labelledby="h-ahead" className="rounded-[14px] border bg-card px-[22px] py-[18px]">
+      <div className="mb-3 flex items-baseline justify-between gap-4">
+        <h2 id="h-ahead" className="text-[16px] font-semibold text-foreground">
+          What’s ahead
+        </h2>
+        <Link href="/portal/year" className="text-[13px] font-medium text-primary hover:underline">
+          Year at a glance →
+        </Link>
       </div>
-    </div>
-  );
-}
-
-type Member = Pick<Reviewer, "name" | "qualification">;
-
-/** PRD §9: customers see the lead expert and the India and US reviewers, with qualifications. */
-function teamOf(reviewers: Reviewer[] | null, lead: string) {
-  const find = (pred: (r: Reviewer) => boolean) => reviewers?.find(pred) ?? null;
-  return {
-    lead: find((r) => r.role === "Lead tax expert") ?? { name: lead, qualification: "" },
-    india: find((r) => r.country === "IN" && r.role !== "Lead tax expert"),
-    us: find((r) => r.country === "US" && r.role !== "Lead tax expert"),
-  };
-}
-
-function ExpertLine({ lead, className }: { lead: Member; className?: string }) {
-  return (
-    <div className={cn("flex items-center gap-3 rounded-xl border bg-card px-3 py-2.5", className)}>
-      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-[13px] font-semibold text-primary-foreground">
-        {initials(lead.name)}
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-semibold text-foreground">{lead.name} · your lead expert</p>
-        <p className="text-[13px] text-muted-foreground">Replies within 1 business day</p>
-      </div>
-      {whatsappHref && (
-        <a
-          href={whatsappHref}
-          target="_blank"
-          rel="noreferrer"
-          aria-label={`Message ${lead.name} on WhatsApp`}
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border text-primary hover:bg-muted"
-        >
-          <MessageCircle className="h-5 w-5" />
-        </a>
-      )}
-    </div>
-  );
-}
-
-function TeamPanel({ team }: { team: ReturnType<typeof teamOf> }) {
-  return (
-    <Section title="Your Kiyos team">
-      <div className="flex items-center gap-3">
-        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary text-sm font-semibold text-primary-foreground">
-          {initials(team.lead.name)}
-        </span>
-        <div className="min-w-0">
-          <p className="truncate text-[15px] font-semibold text-foreground">{team.lead.name}</p>
-          <p className="text-[13px] text-muted-foreground">
-            Lead expert{team.lead.qualification ? ` · ${team.lead.qualification}` : ""}
-          </p>
-        </div>
-      </div>
-      <p className="mt-3 text-[13px] text-muted-foreground">Owns your case. Replies within 1 business day. Includes a call every quarter.</p>
-      {(team.india || team.us) && (
-        <ul className="mt-3 space-y-1.5 border-t pt-3 text-[13px]">
-          {[
-            { who: team.india, label: "India reviewer" },
-            { who: team.us, label: "US reviewer" },
-          ].map(
-            ({ who, label }) =>
-              who && (
-                <li key={label}>
-                  <span className="block font-medium text-foreground">{who.name}</span>
-                  <span className="text-muted-foreground">
-                    {label}
-                    {who.qualification ? ` · ${who.qualification}` : ""}
-                  </span>
-                </li>
-              )
-          )}
-        </ul>
-      )}
-      {whatsappHref ? (
-        <a
-          href={whatsappHref}
-          target="_blank"
-          rel="noreferrer"
-          className="mt-4 flex min-h-11 items-center justify-center gap-2 rounded-lg bg-primary text-sm font-semibold text-primary-foreground"
-        >
-          <MessageCircle className="h-4 w-4" /> Message on WhatsApp
-        </a>
-      ) : (
-        <p className="mt-4 text-[13px] text-muted-foreground">Message your team any time on WhatsApp.</p>
-      )}
-    </Section>
-  );
-}
-
-/** CD-08 (Home half): one compact row per country; the full panels live on Tax position. */
-function PositionRow({
-  code,
-  status,
-  reviewers,
-  lead,
-}: {
-  code: "IN" | "US";
-  status?: CountryStatus;
-  reviewers: Reviewer[] | null;
-  lead: string;
-}) {
-  // CD-01: name the reviewer of this country, or say plainly that nobody has yet.
-  const reviewer = status?.reviewed_by ? reviewers?.find((r) => r.name === status.reviewed_by) : null;
-  return (
-    <li className="flex gap-3 px-5 py-3.5">
-      <span className="mt-0.5 flex h-6 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-[11px] font-semibold text-foreground">
-        {code}
-      </span>
-      {status ? (
-        <div className="min-w-0 space-y-0.5 text-[13px]">
-          <p className="text-[14px] font-semibold text-foreground">
-            {status.status} · {status.year}
-          </p>
-          <p className="text-muted-foreground">
-            {status.filing} due {formatDate(status.due, { day: "numeric", month: "short", year: "numeric" })}
-          </p>
-          <p className="text-muted-foreground">Stage: {status.state.toLowerCase()}</p>
-          <p className={status.reviewed_by ? "text-foreground" : "text-muted-foreground"}>
-            {status.reviewed_by
-              ? `Reviewed by ${status.reviewed_by}${reviewer?.qualification ? `, ${reviewer.qualification}` : ""}`
-              : "Not yet reviewed"}
-          </p>
-        </div>
-      ) : (
-        <p className="text-[13px] text-muted-foreground">
-          {lead} is working out your position in {COUNTRY[code].name}. You&apos;ll see it here once it&apos;s reviewed.
-        </p>
-      )}
-    </li>
-  );
-}
-
-function Deadlines({ deadlines, className }: { deadlines: { date: string; country: "IN" | "US"; filing: string }[]; className?: string }) {
-  return (
-    <Section title="Upcoming deadlines" className={className} flush>
-      {deadlines.length === 0 ? (
-        <p className="px-5 py-3 text-[13px] text-muted-foreground">Your filing deadlines appear here once your expert maps your returns.</p>
-      ) : (
-        <ol className="divide-y">
-          {deadlines.map((d) => (
-            <li key={d.country} className="flex gap-3 px-5 py-3">
-              <span className="w-14 shrink-0 tabular-nums">
-                <span className="block text-sm font-semibold text-foreground">{formatDate(d.date, { day: "numeric", month: "short" })}</span>
-                <span className="text-xs text-muted-foreground">{d.date.slice(0, 4)}</span>
+      <ul className="sr-only">
+        {mineSorted.map((d, i) => (
+          <li key={`m-${i}`}>Something for you, {long(d)}</li>
+        ))}
+        {returns.map((r) => (
+          <li key={r.label}>
+            {r.label}, {long(r.date)}
+          </li>
+        ))}
+      </ul>
+      <div aria-hidden className="overflow-x-auto">
+        <div className="relative mx-2 h-[100px] min-w-[600px]">
+          <span className="absolute left-0 right-0 top-[46px] h-0.5 bg-border" />
+          <span className="absolute bottom-[18px] left-0 top-[30px] border-l-2 border-primary" />
+          <span className="absolute left-1.5 top-2 text-[11.5px] font-semibold text-primary">Today</span>
+          {months
+            .filter((_, i) => i % every === 0)
+            .map((m) => (
+              <span key={m.label + m.x} className="absolute top-6 text-[11px] text-muted-foreground" style={{ left: `${m.x}%` }}>
+                {m.label}
               </span>
-              <span className="min-w-0">
-                <span className="block text-sm font-semibold text-foreground">{COUNTRY[d.country].name} return due</span>
-                <span className="text-[13px] text-muted-foreground">
-                  {d.filing} · {relativeDays(d.date)}
-                </span>
-              </span>
-            </li>
+            ))}
+          {mineSorted.map((d, i) => (
+            <span key={`d-${i}`} className="absolute top-10 h-3 w-3 rotate-45 bg-[#C9822B] outline outline-2 outline-white" style={{ left: `calc(${x(d)}% + ${i * 3}px)` }} />
           ))}
-        </ol>
-      )}
-    </Section>
+          {groups.map((g, gi) => (
+            <span key={g[0]} className="absolute top-[62px] whitespace-nowrap pl-2 text-[11.5px] font-semibold leading-tight text-[#7A3F06]" style={place(x(g[0]))}>
+              {groupLabel(g)}
+              <br />
+              <span className="font-normal">{g.length > 1 ? `your ${g.length} asks` : gi === 0 ? "your next ask" : "your ask"}</span>
+            </span>
+          ))}
+          {returns.map((r) => (
+            <span key={r.label}>
+              <span className="absolute top-10 h-3 w-3 -translate-x-1/2 rotate-45 bg-foreground" style={{ left: `${x(r.date)}%` }} />
+              <span className="absolute top-[62px] whitespace-nowrap text-[11.5px] leading-tight text-foreground" style={place(x(r.date))}>
+                {long(r.date)}
+                <br />
+                <span className="text-muted-foreground">{r.label}</span>
+              </span>
+            </span>
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -355,4 +362,8 @@ function greeting() {
 
 function formatValue(key: string, value: string) {
   return /date|return/.test(key) ? formatDate(value, { day: "numeric", month: "long", year: "numeric" }) ?? value : value;
+}
+
+function lowerFirst(s: string) {
+  return /^[A-Z][a-z]/.test(s) ? s.charAt(0).toLowerCase() + s.slice(1) : s;
 }

@@ -77,6 +77,18 @@ class Case(Base):
     phone: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     # M4 verify-and-confirm: set when the customer confirms the pre-filled profile
     profile_confirmed_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)
+    # Customer workspace visits, for "since your last visit": the current visit and the
+    # one before it. A visit lasts while pages are opened less than 30 minutes apart.
+    last_seen_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)
+    prev_seen_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)
+    # Alerts: when the customer last read their messages, and when an expert last opened
+    # the case (so a customer's reply to the expert shows as new until then).
+    customer_read_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)
+    expert_seen_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)
+    # Prototype journeys: which demo persona this case belongs to (None for real cases).
+    demo_key: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    # Expert review state: in_review | awaiting_customer | ready_for_signoff | signed_off
+    review_status: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow, onupdate=_utcnow)
 
@@ -90,6 +102,8 @@ class Case(Base):
     action_items: Mapped[list["ActionItem"]] = relationship(back_populates="case", cascade="all, delete-orphan")
     notices: Mapped[list["Notice"]] = relationship(back_populates="case", cascade="all, delete-orphan")
     scenarios: Mapped[list["Scenario"]] = relationship(back_populates="case", cascade="all, delete-orphan")
+    stays: Mapped[list["Stay"]] = relationship(back_populates="case", cascade="all, delete-orphan")
+    notes: Mapped[list["CaseNote"]] = relationship(back_populates="case", cascade="all, delete-orphan")
 
 
 class Document(Base):
@@ -120,6 +134,9 @@ class Fact(Base):
     unit: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     source: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     as_of: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    # Exactly where the value came from: the document page and line, the message or
+    # answer, or the expert entry. `source` stays the short name. See api/evidence.py.
+    evidence: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
 
     case: Mapped["Case"] = relationship(back_populates="facts")
@@ -271,6 +288,13 @@ class Recommendation(Base):
     superseded_by_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("recommendation.id"), nullable=True
     )
+    # A way to save (Nov 2026): one of the options set in law (api/expert_entries.py),
+    # chosen and sized by the expert. Kiyos never suggests or sizes one itself.
+    option: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    country: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
+    amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    currency: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    deadline: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
 
     case: Mapped["Case"] = relationship(back_populates="recommendations")
@@ -432,4 +456,75 @@ class ProfileChange(Base):
     status: Mapped[str] = mapped_column(String(20), default="proposed")
     # proposed | confirmed | rejected
     decided_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+
+
+class Stay(Base):
+    """A period of physical presence in a country: the factual basis for residency.
+
+    `departed` is None while the person is still there. `source` says where the dates
+    came from (onboarding, passport, customer correction); dates change only through
+    a confirmed profile change.
+    """
+
+    __tablename__ = "stay"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("case.id"))
+    country: Mapped[str] = mapped_column(String(5))          # IN | US
+    arrived: Mapped[str] = mapped_column(String(10))         # ISO date
+    departed: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    source: Mapped[str] = mapped_column(String(100), default="onboarding")
+    document_id: Mapped[Optional[int]] = mapped_column(ForeignKey("document.id"), nullable=True)
+    # The passport page and stamp lines behind these dates (see api/evidence.py).
+    evidence: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+
+    case: Mapped["Case"] = relationship(back_populates="stays")
+
+
+class CaseNote(Base):
+    """An expert's internal observation on a case. Never shown to the customer."""
+
+    __tablename__ = "case_note"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("case.id"))
+    author: Mapped[str] = mapped_column(String(255))
+    body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+
+    case: Mapped["Case"] = relationship(back_populates="notes")
+
+
+class MagicLink(Base):
+    """A secure, time-limited link sent on WhatsApp (scope: magic-link sign-in and payment
+    magic link). Opening a sign-in link takes the customer straight to the page it points at;
+    a pay link opens the payment page pre-filled with the customer and the plan they chose."""
+
+    __tablename__ = "magic_link"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("case.id"))
+    purpose: Mapped[str] = mapped_column(String(20))          # signin | pay
+    target: Mapped[str] = mapped_column(String(255))          # where it opens
+    payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # pay: the plan chosen
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    used_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)
+    opened_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+
+
+class ExpertAccount(Base):
+    """A Kiyos tax expert who signs in to the expert workspace (scope: expert sign-in and sign-up)."""
+
+    __tablename__ = "expert_account"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(120))
+    email: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    qualification: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    role: Mapped[str] = mapped_column(String(40), default="Tax expert")
+    last_sign_in_at: Mapped[Optional[datetime]] = mapped_column(UTCDateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)

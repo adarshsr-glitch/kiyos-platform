@@ -1,0 +1,42 @@
+id: IN-RES-RNOR-729DAYS
+jurisdiction: IN
+tax_year: "2026-27"
+
+sources:
+  - id: IN-ITA-S6
+    section: "6(6)(a)"
+    passage: >-
+      A resident is "not ordinarily resident" if he has during the seven
+      previous years preceding that year been in India for a period of, or
+      periods amounting in all to, 729 days or less.
+
+summary: >-
+  A resident individual is RNOR if they were in India for 729 days or less in
+  the seven preceding financial years.
+
+inputs:
+  - name: days_in_india_prev7
+    type: integer
+    description: Days present in India in the seven preceding financial years combined.
+
+logic:
+  kind: threshold
+  input: days_in_india_prev7
+  operator: "<="
+  threshold: 729
+  returns:
+    true: RNOR_QUALIFIED
+    false: NOT_RNOR_BY_THIS_LIMB
+
+status: pending_validation
+
+notes: >-
+  Second limb of RNOR alongside IN-RES-RNOR-9OF10. Either limb is enough.
+
+test_cases:
+  - name: "Short visits only"
+    inputs: { days_in_india_prev7: 280 }
+    expected: true
+  - name: "Long stays"
+    inputs: { days_in_india_prev7: 800 }
+    expected: false

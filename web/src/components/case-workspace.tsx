@@ -1,5 +1,6 @@
 "use client";
 
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Tabs,
   TabsContent,
@@ -32,32 +33,40 @@ import type {
   Member,
   Ticket,
 } from "@/lib/types";
-import { TopicRow } from "./topic-row";
-import { ActionBoard } from "./action-board";
-import { ScenarioCompare } from "./scenario-compare";
 import { ResidencyTimeline } from "./residency-timeline";
 import { DonutMiniChart } from "./mini-chart";
 import { AssessmentReview } from "./assessment-review";
 import { TicketList } from "./ticket-list";
+import { ActionItems, Recommendations as RecommendationCards, TaxQuestions } from "./case/case-tabs";
+import type { Brief, Residency } from "@/lib/residency";
+import { hasCaptain } from "@/lib/captain";
 import {
   AlertTriangle,
   CheckCircle2,
   FileText,
-  Lightbulb,
   User,
 } from "lucide-react";
 
+// Most used first: today's work, then the work queues, then the record. One row: eight tabs.
+// Profile is the customer's file (the same word they see): summary and sign-off, residency
+// and household, financial life, as sections of one tab.
 const TABS = [
-  { key: "overview",      label: "Overview" },
-  { key: "profile",       label: "Cross-border profile" },
-  { key: "financial",     label: "Financial life" },
-  { key: "tax",           label: "Tax & compliance" },
-  { key: "documents",     label: "Documents" },
-  { key: "scenarios",     label: "Scenarios" },
-  { key: "actions",       label: "Action items" },
+  { key: "today",           label: "Today" },
+  { key: "tickets",         label: "Tickets" },
+  { key: "actions",         label: "Action items" },
+  { key: "tax",             label: "Tax questions" },
   { key: "recommendations", label: "Recommendations" },
-  { key: "tickets",       label: "Tickets" },
-  { key: "audit",         label: "Audit" },
+  { key: "documents",       label: "Documents" },
+  { key: "profile",         label: "Profile" },
+  { key: "audit",           label: "Audit" },
+] as const;
+type TabKey = (typeof TABS)[number]["key"];
+// Links made before the tabs were merged still land in the right place.
+const OLD_TABS: Record<string, TabKey> = { overview: "profile", financial: "profile", brief: "today" };
+const PROFILE_SECTIONS = [
+  { id: "profile-summary", label: "Summary and sign-off" },
+  { id: "profile-residency", label: "Residency and household" },
+  { id: "profile-money", label: "Financial life" },
 ];
 
 export function CaseWorkspace({
@@ -65,59 +74,111 @@ export function CaseWorkspace({
   auditLog,
   tickets,
   events,
+  today,
+  bare,
 }: {
   caseData: CaseDetail;
   auditLog: AiCallEntry[];
   tickets: Ticket[];
   events: CaseEvent[];
+  brief?: Brief | null;
+  residency?: Residency | null;
+  /** The expert's working view, shown as the first tab. */
+  today?: React.ReactNode;
+  /** No outer padding (the page provides it). */
+  bare?: boolean;
 }) {
   const openTickets = tickets.filter((t) => t.status === "open").length;
+  const openItems = caseData.action_items.filter((i) => i.status !== "done").length;
+  const tabs = TABS.filter((t) => t.key !== "today" || !!today);
+  const fallback: TabKey = today ? "today" : "profile";
+
+  // The open tab lives in the URL (?tab=…), so a link, a refresh or Back returns to it.
+  const router = useRouter();
+  const pathname = usePathname();
+  const params = useSearchParams();
+  const asked = params.get("tab") ?? "";
+  const wanted = (OLD_TABS[asked] ?? asked) as TabKey;
+  const tab: TabKey = tabs.some((t) => t.key === wanted) ? wanted : fallback;
+  const select = (v: string) => {
+    const next = new URLSearchParams(params.toString());
+    if (v === fallback) next.delete("tab");
+    else next.set("tab", v);
+    const q = next.toString();
+    router.replace(q ? `${pathname}?${q}` : pathname, { scroll: false });
+  };
+  const count = (n: number, urgent?: boolean) =>
+    n > 0 ? (
+      <span
+        className={cn(
+          "ml-1.5 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full px-1 text-[10px] font-semibold tabular-nums",
+          urgent ? "bg-rose-600 text-white" : "bg-muted text-muted-foreground"
+        )}
+      >
+        {n}
+      </span>
+    ) : null;
+
   return (
-    <div className="px-6 py-6">
-      <Tabs defaultValue="overview" className="w-full">
-        <TabsList className="h-auto w-full flex-wrap justify-start gap-1 bg-transparent p-0 border-b rounded-none">
-          {TABS.map((t) => (
+    <div className={bare ? "" : "px-6 py-6"}>
+      <Tabs value={tab} onValueChange={select} className="w-full">
+        {/* One row; on narrow screens it scrolls sideways instead of wrapping. */}
+        <TabsList className="h-auto w-full justify-start gap-0 overflow-x-auto rounded-none border-b bg-transparent p-0 [scrollbar-width:none]">
+          {tabs.map((t) => (
             <TabsTrigger
               key={t.key}
               value={t.key}
-              className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-none border-b-2 border-transparent data-[state=active]:border-primary rounded-none rounded-t-md"
+              className="shrink-0 whitespace-nowrap rounded-none rounded-t-md border-b-2 px-2.5 border-transparent data-[state=active]:border-primary data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-none"
             >
               {t.label}
-              {t.key === "tickets" && openTickets > 0 && (
-                <span className="ml-1.5 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-rose-600 px-1 text-[10px] font-semibold text-white tabular-nums">
-                  {openTickets}
-                </span>
-              )}
+              {t.key === "tickets" && count(openTickets, true)}
+              {t.key === "actions" && count(openItems)}
             </TabsTrigger>
           ))}
         </TabsList>
 
-        <TabsContent value="overview" className="mt-6">
-          <Overview caseData={caseData} events={events} />
+        {today && (
+          <TabsContent value="today" className="mt-6">
+            {today}
+          </TabsContent>
+        )}
+        <TabsContent value="tickets" className="mt-6">
+          <TicketList tickets={tickets} advisor={hasCaptain(caseData.case_captain) ? caseData.case_captain : "Kiyos team"} customer={caseData.client_name} />
         </TabsContent>
-        <TabsContent value="profile" className="mt-6">
-          <Profile caseData={caseData} />
-        </TabsContent>
-        <TabsContent value="financial" className="mt-6">
-          <FinancialLife caseData={caseData} />
+        <TabsContent value="actions" className="mt-6">
+          <ActionItems caseData={caseData} />
         </TabsContent>
         <TabsContent value="tax" className="mt-6">
-          <TaxCompliance caseData={caseData} />
+          <TaxQuestions caseData={caseData} />
+        </TabsContent>
+        <TabsContent value="recommendations" className="mt-6">
+          <RecommendationCards caseData={caseData} />
         </TabsContent>
         <TabsContent value="documents" className="mt-6">
           <Documents caseData={caseData} />
         </TabsContent>
-        <TabsContent value="scenarios" className="mt-6">
-          <Scenarios caseData={caseData} />
-        </TabsContent>
-        <TabsContent value="actions" className="mt-6">
-          <ActionsTab caseData={caseData} />
-        </TabsContent>
-        <TabsContent value="recommendations" className="mt-6">
-          <Recommendations caseData={caseData} />
-        </TabsContent>
-        <TabsContent value="tickets" className="mt-6">
-          <TicketList tickets={tickets} advisor={caseData.case_captain} />
+        <TabsContent value="profile" className="mt-6">
+          <nav aria-label="Sections of the profile" className="mb-5 flex flex-wrap gap-x-4 gap-y-1 text-[13px]">
+            {PROFILE_SECTIONS.map((s) => (
+              <a key={s.id} href={`#${s.id}`} className="text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">
+                {s.label}
+              </a>
+            ))}
+          </nav>
+          <div className="space-y-10">
+            <section id="profile-summary" aria-labelledby="profile-summary-h" className="scroll-mt-4">
+              <h2 id="profile-summary-h" className="mb-3 text-[15px] font-semibold text-foreground">Summary and sign-off</h2>
+              <Overview caseData={caseData} events={events} />
+            </section>
+            <section id="profile-residency" aria-labelledby="profile-residency-h" className="scroll-mt-4">
+              <h2 id="profile-residency-h" className="mb-3 text-[15px] font-semibold text-foreground">Residency and household</h2>
+              <Profile caseData={caseData} />
+            </section>
+            <section id="profile-money" aria-labelledby="profile-money-h" className="scroll-mt-4">
+              <h2 id="profile-money-h" className="mb-3 text-[15px] font-semibold text-foreground">Financial life</h2>
+              <FinancialLife caseData={caseData} />
+            </section>
+          </div>
         </TabsContent>
         <TabsContent value="audit" className="mt-6">
           <Audit log={auditLog} events={events} />
@@ -147,7 +208,7 @@ function Overview({ caseData, events }: { caseData: CaseDetail; events: CaseEven
           </p>
           <Separator className="my-4" />
           <div className="grid grid-cols-2 gap-4 text-xs">
-            <MicroFact label="Lead expert" value={caseData.case_captain === "Unassigned" ? "Assigned on payment" : caseData.case_captain} />
+            <MicroFact label="Expert" value={caseData.case_captain === "Unassigned" ? "Assigned on payment" : caseData.case_captain} />
             <MicroFact label="Tax year" value={caseData.tax_year ?? "—"} />
             <MicroFact label="Arrival" value={caseData.arrival_date ?? "—"} />
             <MicroFact
@@ -434,82 +495,6 @@ function groupFactsFinancial(facts: Fact[]) {
 }
 
 // ───────────────────────────────────────────────────────────── Tax & compliance
-function TaxCompliance({ caseData }: { caseData: CaseDetail }) {
-  const byStatus = {
-    open: caseData.topics.filter((t) => t.status === "open"),
-    in_progress: caseData.topics.filter((t) => t.status === "in_progress"),
-    resolved: caseData.topics.filter((t) => t.status === "resolved"),
-  };
-
-  if (caseData.topics.length === 0) {
-    return (
-      <Card>
-        <CardContent className="py-10 text-center text-sm text-muted-foreground italic">
-          No tax topics raised for this case yet.
-        </CardContent>
-      </Card>
-    );
-  }
-
-  return (
-    <div className="space-y-6">
-      {caseData.notices.length > 0 && (
-        <Card className="border-rose-200 bg-rose-50/40">
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-rose-700" />
-              Open notices
-            </CardTitle>
-            <CardDescription>Correspondence from tax authorities</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {caseData.notices.map((n) => (
-              <div key={n.id} className="rounded-md border bg-card p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="font-medium text-sm">{n.subject}</p>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      {n.authority} · received {n.received_at}
-                      {n.deadline && <> · deadline {n.deadline}</>}
-                    </p>
-                  </div>
-                  <Badge
-                    className={cn(
-                      n.status === "responded" && "bg-amber-100 text-amber-800 hover:bg-amber-100",
-                      n.status === "resolved" && "bg-emerald-100 text-emerald-800 hover:bg-emerald-100",
-                      n.status === "open" && "bg-rose-100 text-rose-800 hover:bg-rose-100"
-                    )}
-                  >
-                    {n.status}
-                  </Badge>
-                </div>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-      )}
-
-      {(["open", "in_progress", "resolved"] as const).map((s) => (
-        byStatus[s].length > 0 && (
-          <div key={s} className="space-y-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              {s === "open" ? "Open" : s === "in_progress" ? "In progress" : "Resolved"}
-              <span className="ml-2 tabular-nums text-muted-foreground font-normal">
-                {byStatus[s].length}
-              </span>
-            </h3>
-            <div className="space-y-2">
-              {byStatus[s].map((t) => (
-                <TopicRow key={t.id} topic={t} />
-              ))}
-            </div>
-          </div>
-        )
-      ))}
-    </div>
-  );
-}
-
 // ───────────────────────────────────────────────────────────── Documents
 function Documents({ caseData }: { caseData: CaseDetail }) {
   if (caseData.documents.length === 0) {
@@ -590,115 +575,6 @@ function ExtractionCell({ status }: { status: string }) {
 }
 
 // ───────────────────────────────────────────────────────────── Scenarios
-function Scenarios({ caseData }: { caseData: CaseDetail }) {
-  return (
-    <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">
-        Side-by-side comparison of the modelled tax positions. The recommended
-        scenario is highlighted; assumptions and outputs are both shown.
-      </p>
-      <ScenarioCompare scenarios={caseData.scenarios} />
-    </div>
-  );
-}
-
-// ───────────────────────────────────────────────────────────── Action items
-function ActionsTab({ caseData }: { caseData: CaseDetail }) {
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">
-          Every open commitment on this case, by status.
-        </p>
-        <div className="flex items-center gap-2 text-xs">
-          <span className="text-muted-foreground">
-            {caseData.action_items.length} total
-          </span>
-        </div>
-      </div>
-      <ActionBoard items={caseData.action_items} />
-    </div>
-  );
-}
-
-// ───────────────────────────────────────────────────────────── Recommendations
-function Recommendations({ caseData }: { caseData: CaseDetail }) {
-  if (caseData.recommendations.length === 0) {
-    return (
-      <Card>
-        <CardContent className="py-10 text-center text-sm text-muted-foreground italic">
-          No recommendations on record.
-        </CardContent>
-      </Card>
-    );
-  }
-  const sorted = [...caseData.recommendations].sort((a, b) =>
-    b.date.localeCompare(a.date)
-  );
-
-  return (
-    <div className="relative pl-6">
-      <div className="absolute left-2 top-2 bottom-2 w-px bg-border" />
-      <ul className="space-y-6">
-        {sorted.map((r) => (
-          <li key={r.id} className="relative">
-            <span
-              className={cn(
-                "absolute -left-5 top-1 h-3 w-3 rounded-full border-2",
-                r.status === "accepted" && "border-emerald-500 bg-emerald-50",
-                r.status === "implemented_reported" && "border-primary bg-primary/10",
-                r.status === "proposed" && "border-amber-500 bg-amber-50",
-                r.status === "declined" && "border-rose-500 bg-rose-50",
-                r.status === "superseded" && "border-slate-400 bg-slate-100"
-              )}
-            />
-            <div className="flex items-center gap-2 mb-1">
-              <Lightbulb className="h-3.5 w-3.5 text-muted-foreground" />
-              <span className="text-xs text-muted-foreground">
-                {r.date} · {r.author}
-              </span>
-              <StatusPill status={r.status} />
-            </div>
-            <p className="text-sm font-medium text-foreground leading-snug">
-              {r.content}
-            </p>
-            {r.rationale && (
-              <p className="mt-2 text-xs text-muted-foreground italic leading-relaxed">
-                {r.rationale}
-              </p>
-            )}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-const STATUS_LABEL: Record<string, string> = {
-  proposed: "Proposed",
-  accepted: "Accepted",
-  declined: "Declined",
-  implemented_reported: "Implemented",
-  superseded: "Superseded",
-};
-
-function StatusPill({ status }: { status: string }) {
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium",
-        status === "accepted" && "bg-emerald-100 text-emerald-800",
-        status === "implemented_reported" && "bg-primary/15 text-primary",
-        status === "proposed" && "bg-amber-100 text-amber-800",
-        status === "declined" && "bg-rose-100 text-rose-800",
-        status === "superseded" && "bg-slate-200 text-slate-700"
-      )}
-    >
-      {STATUS_LABEL[status] ?? status}
-    </span>
-  );
-}
-
 // ───────────────────────────────────────────────────────────── Audit
 const EVENT_LABEL: Record<string, string> = {
   "assessment.signed_off": "Signed off assessment",
@@ -709,7 +585,7 @@ const EVENT_LABEL: Record<string, string> = {
   "conversation.handback": "Handed thread back",
   "ticket.created": "Raised ticket",
   "ticket.resolved": "Resolved ticket",
-  "call.requested": "Requested advisor call",
+  "call.requested": "Requested a call with the expert",
 };
 
 function fmtWhen(iso: string) {

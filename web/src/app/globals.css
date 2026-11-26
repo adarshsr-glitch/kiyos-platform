@@ -77,6 +77,20 @@
     letter-spacing: 0.08em;
     font-weight: 500;
   }
+  /* Customer workspace: a quiet sans display face with lining, tabular figures. The
+     serif stays for the wordmark only; Playfair's old-style numerals and ₹ glyph read
+     as decorative next to money. */
+  .portal .font-serif {
+    font-family: var(--font-display), var(--font-inter), system-ui, sans-serif;
+    font-style: normal;
+    font-weight: 600;
+    letter-spacing: -0.022em;
+    font-feature-settings: "lnum" 1, "tnum" 1;
+  }
+  /* Keyboard focus only (the visible ring itself is defined outside the layers, below). */
+  .portal :focus:not(:focus-visible) {
+    outline: none;
+  }
   /* No display serif inside the expert workspace. */
   .workspace .font-serif {
     font-family: var(--font-inter), system-ui, sans-serif;
@@ -115,4 +129,25 @@
     font-size: 12.5px;
     line-height: 16.5px;
   }
+}
+
+/* Prototype journeys: the "click here next" cue. Outside the product's own styles. */
+@keyframes j-pulse-ring {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(37, 211, 102, 0.0), 0 0 0 2px rgba(37, 211, 102, 0.55); }
+  50% { box-shadow: 0 0 0 6px rgba(37, 211, 102, 0.18), 0 0 0 2px rgba(37, 211, 102, 0.9); }
+}
+.j-pulse { animation: j-pulse-ring 1.8s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .j-pulse { animation: none; box-shadow: 0 0 0 2px rgba(37, 211, 102, 0.9); } }
+
+/* Prototype journeys: free-roam demo controls are hidden while a journey runs. */
+.journey-on .free-roam-only { display: none !important; }
+.journey-on .portal-sticky { top: 62px; }
+
+/* Keyboard focus, on both sides. Outside the Tailwind layers on purpose, so a component's
+   `outline-none` can't hide it. Full-strength ring colour (about 9:1 on the page
+   background, WCAG 1.4.11 asks for 3:1). Controls that draw their own focus ring
+   (`focus-visible:ring-*`, the ui/* primitives) keep theirs instead. */
+:focus-visible:not([class*="focus-visible:ring"]) {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
 }

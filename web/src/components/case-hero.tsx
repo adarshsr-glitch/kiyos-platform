@@ -3,6 +3,7 @@ import { Jurisdictions } from "./country-chip";
 import { Calendar, Briefcase, Clock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { JourneyBadge } from "./journey-badge";
+import { formatDate } from "@/lib/format";
 
 function residencyFromCase(c: CaseDetail): string | null {
   const t = c.topics.find(
@@ -98,7 +99,7 @@ export function CaseHero({ caseData }: { caseData: CaseDetail }) {
                 <Clock className="h-3 w-3" />
                 Next deadline
               </p>
-              <p className="mt-0.5 text-sm font-semibold text-foreground">{nextD.date}</p>
+              <p className="mt-0.5 text-sm font-semibold text-foreground">{formatDate(nextD.date, { day: "numeric", month: "short", year: "numeric" }) ?? nextD.date}</p>
               <p className="mt-0.5 text-xs text-muted-foreground line-clamp-1">
                 {nextD.label}
               </p>

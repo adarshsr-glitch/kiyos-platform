@@ -1,4 +1,4 @@
-.PHONY: help install up down dev dev-web dev-api test test-engine test-knowledge test-api lint seed reset-db clean
+.PHONY: help install up down dev dev-web dev-api test test-engine test-knowledge test-api lint seed reset-db clean demo-stage demo-retake demo-unstage
 
 help:
 	@echo "Kiyos platform — localhost dev"
@@ -17,6 +17,9 @@ help:
 	@echo "  make lint           ruff + eslint"
 	@echo "  make reset-db       delete ./data/kiyos.db (will be recreated on next start/seed)"
 	@echo "  make clean          remove build artifacts"
+	@echo "  make demo-stage     stage the recording demo (saves today's database first)"
+	@echo "  make demo-retake    back to the staged demo before each take"
+	@echo "  make demo-unstage   restore the database from before staging"
 
 install:
 	cd web && pnpm install
@@ -65,3 +68,13 @@ clean:
 	rm -rf web/.next web/node_modules api/.pytest_cache api/__pycache__
 	find . -name "*.pyc" -delete
 	find . -name "__pycache__" -type d -exec rm -rf {} +
+
+# Screen-recording demo (scripts/demo_stage.py). Never starts or stops servers.
+demo-stage:
+	cd api && poetry run python ../scripts/demo_stage.py stage
+
+demo-retake:
+	cd api && poetry run python ../scripts/demo_stage.py retake
+
+demo-unstage:
+	cd api && poetry run python ../scripts/demo_stage.py unstage

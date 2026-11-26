@@ -2,66 +2,105 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { MessageCircle } from "lucide-react";
 import { tierOf } from "@/lib/tier";
-import { whatsappHref } from "@/lib/whatsapp";
-import { PortalNav, PortalTabBar } from "@/components/portal/portal-nav";
-import { DemoSwitcher } from "@/components/portal/demo-switcher";
+import { PortalSectionTitle, PortalSideNav, PortalTabBar } from "@/components/portal/portal-nav";
+import { cn } from "@/lib/utils";
+import { hasCaptain } from "@/lib/captain";
 import { ViewToggle } from "@/components/view-toggle";
 import { CustomerProvider } from "@/lib/customer-context";
-import type { CaseDetail, ConversationState } from "@/lib/types";
+import type { CaseDetail, CaseListItem, ConversationState } from "@/lib/types";
+import { CustomerMenu } from "@/components/portal/customer-menu";
+import { AskKiyos } from "@/components/portal/ask-kiyos";
+import { UseCustomer } from "./use-customer";
+import { InboxProvider } from "@/components/portal/inbox";
+
+const initials = (n: string) => n.split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
 
 export function PortalShell({
   caseData,
-  conversation,
   children,
+  customers = [],
+  fallbackId = null,
 }: {
   caseData: CaseDetail;
   conversation: ConversationState | null;
   children: React.ReactNode;
+  customers?: CaseListItem[];
+  fallbackId?: number | null;
 }) {
   const pathname = usePathname();
-  const chatPage = pathname === "/portal/chat";
+  const chatPage = pathname === "/portal/messages";
   const signedOut = caseData.journey === "signup";
+  const captained = hasCaptain(caseData.case_captain);
+
+  // The WhatsApp thread is a different surface from the workspace: no workspace chrome.
+  if (pathname === "/portal/whatsapp") {
+    return <CustomerProvider caseData={caseData}>{children}</CustomerProvider>;
+  }
+
+  // A customer still in the WhatsApp scan has no workspace yet: open the default customer.
+  if (caseData.journey === "intake" && fallbackId && fallbackId !== caseData.id) {
+    return <UseCustomer id={fallbackId} />;
+  }
 
   return (
     <CustomerProvider caseData={caseData}>
-      <div className="min-h-screen bg-background">
-        <header className="sticky top-0 z-40 border-b bg-background/90 backdrop-blur">
-          <div className="mx-auto flex h-14 max-w-[1440px] items-stretch gap-8 px-4 sm:px-6">
-            <Link href="/portal" className="brand-wordmark flex items-center text-xl uppercase text-primary">
-              Kiyos
-            </Link>
-            {!signedOut && <PortalNav />}
-            <div className="ml-auto flex items-center gap-2">
-              {whatsappHref && tierOf(caseData) === "premium" && (
-                <a
-                  href={whatsappHref}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="hidden items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted lg:inline-flex"
-                >
-                  <MessageCircle className="h-4 w-4" /> Message on WhatsApp
-                </a>
-              )}
-              <div className="hidden md:block">
-                <DemoSwitcher />
-              </div>
-              <ViewToggle className="shrink-0" />
+      <InboxProvider caseId={caseData.id}>
+      <div className="portal min-h-screen bg-background lg:flex">
+        {/* Desktop: a side rail like the expert workspace, so sections never compete with content. */}
+        {!signedOut && (
+          <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-[hsl(var(--sidebar-border))] bg-[hsl(var(--sidebar))] lg:flex">
+            <div className="flex h-14 items-center px-5">
+              <Link href="/portal" className="brand-wordmark text-xl uppercase text-primary">Kiyos</Link>
             </div>
-          </div>
-        </header>
+            {/* The one switch between the customer's and the expert's side (keeps the case). */}
+            <div className="free-roam-only border-t border-[hsl(var(--sidebar-border))] px-4 py-3">
+              <ViewToggle caseId={caseData.id} />
+            </div>
+            <div className="border-y border-[hsl(var(--sidebar-border))] px-3 py-3">
+              <CustomerMenu current={{ id: caseData.id, name: caseData.client_name, journey: caseData.journey }} customers={customers} block />
+            </div>
+            <PortalSideNav />
+            <div className="mt-auto border-t border-[hsl(var(--sidebar-border))] px-4 py-4">
+              {captained && (
+                <div className="flex items-center gap-3">
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-foreground text-[11px] font-semibold text-background">{initials(caseData.case_captain)}</span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-[13px] font-medium text-foreground">{caseData.case_captain}</span>
+                    <span className="block truncate text-[11.5px] text-muted-foreground">Your expert</span>
+                  </span>
+                </div>
+              )}
+            </div>
+          </aside>
+        )}
 
-        {chatPage ? (
-          children
-        ) : (
-          <div className="mx-auto max-w-[1440px] px-4 pb-24 pt-6 sm:px-6 lg:pb-10">
+        <div className="min-w-0 flex-1">
+          <header className="portal-sticky sticky top-0 z-40 border-b bg-background/90 backdrop-blur">
+            <div className="flex h-14 items-center gap-4 px-4 sm:px-6">
+              {/* Phones and tablets: brand and customer here; the sections are in the bottom bar. */}
+              <div className={cn("flex items-center gap-4", !signedOut && "lg:hidden")}>
+                <Link href="/portal" className="brand-wordmark flex items-center text-xl uppercase text-primary">Kiyos</Link>
+                <CustomerMenu current={{ id: caseData.id, name: caseData.client_name, journey: caseData.journey }} customers={customers} />
+              </div>
+              {!signedOut && <PortalSectionTitle customer={caseData.client_name} />}
+              <div className="ml-auto flex items-center gap-2">
+                {tierOf(caseData) === "premium" && <AskKiyos caseData={caseData} />}
+                {/* Phones and tablets have no side panel, so the side switch sits here. */}
+                <ViewToggle compact caseId={caseData.id} className={cn("free-roam-only shrink-0", !signedOut && "lg:hidden")} />
+              </div>
+            </div>
+          </header>
+
+          {/* Messages sits closer to the header (the conversation wants the height); same side padding. */}
+          <div className={cn("mx-auto max-w-[1480px] px-4 pb-24 sm:px-6 lg:px-10 lg:pb-10", chatPage ? "pt-4" : "pt-6")}>
             <main className="min-w-0">{children}</main>
           </div>
-        )}
+        </div>
 
         {!signedOut && <PortalTabBar />}
       </div>
+      </InboxProvider>
     </CustomerProvider>
   );
 }

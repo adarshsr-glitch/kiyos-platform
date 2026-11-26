@@ -1,7 +1,7 @@
 /** Plain-language names for profile fact keys. Unknown keys fall back to a tidy version. */
 
 const LABELS: Record<string, string> = {
-  india_return_date: "Date you moved back to India",
+  india_return_date: "Return to India",
   planned_india_return: "Planned return to India",
   india_transfer_effective: "India transfer date",
   us_employer: "US employer",
@@ -15,6 +15,10 @@ const LABELS: Record<string, string> = {
   us_citizenship_status: "US status",
   spouse_status: "Marital status",
   retirement_date: "Retirement date",
+  left_india_on: "Moved abroad",
+  us_arrived_on: "Arrived in the US",
+  us_departed_on: "Left the US",
+  green_card_from: "Green card since",
 };
 
 export function profileLabel(key: string): string {

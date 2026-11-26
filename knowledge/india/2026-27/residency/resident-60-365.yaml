@@ -1,0 +1,57 @@
+id: IN-RES-60-365
+jurisdiction: IN
+tax_year: "2026-27"
+
+sources:
+  - id: IN-ITA-S6
+    section: "6(1)(c) and Explanation 1"
+    passage: >-
+      An individual is resident if, having within the four years preceding
+      that year been in India for 365 days or more, he is in India for 60 days
+      or more in that year. For an Indian citizen or person of Indian origin
+      who comes on a visit to India, or a citizen leaving India for employment,
+      60 days is read as 182 days (120 days in some cases).
+
+summary: >-
+  Resident if in India for 60 days or more in the year and 365 days or more in
+  the four preceding years, unless the visitor or employment exception applies.
+
+inputs:
+  - name: days_in_india
+    type: integer
+    description: Days present in India during the financial year.
+  - name: days_in_india_prev4
+    type: integer
+    description: Days present in India in the four preceding financial years combined.
+  - name: visit_exception_applies
+    type: boolean
+    description: >-
+      True if the person is an Indian citizen or PIO only visiting India this
+      year, or a citizen who left India for employment this year.
+
+logic:
+  kind: all_of
+  conditions:
+    - { kind: flag, input: visit_exception_applies, equals: false }
+    - { kind: threshold, input: days_in_india, operator: ">=", threshold: 60 }
+    - { kind: threshold, input: days_in_india_prev4, operator: ">=", threshold: 365 }
+  returns:
+    true: RESIDENT
+    false: NOT_RESIDENT_BY_THIS_LIMB
+
+status: pending_validation
+
+notes: >-
+  Prototype rule pending validation. The 120-day variant (Indian income above
+  ₹15 lakh) and the deemed-residency provision are not modelled yet.
+
+test_cases:
+  - name: "Returnee: 75 days this year, 400 in prior four"
+    inputs: { days_in_india: 75, days_in_india_prev4: 400, visit_exception_applies: false }
+    expected: true
+  - name: "Visitor exception applies"
+    inputs: { days_in_india: 75, days_in_india_prev4: 400, visit_exception_applies: true }
+    expected: false
+  - name: "Not enough days in prior four years"
+    inputs: { days_in_india: 75, days_in_india_prev4: 300, visit_exception_applies: false }
+    expected: false

@@ -1,0 +1,43 @@
+id: IN-RES-182
+jurisdiction: IN
+tax_year: "2026-27"
+
+sources:
+  - id: IN-ITA-S6
+    section: "6(1)(a)"
+    passage: >-
+      An individual is said to be resident in India in any previous year if he
+      is in India in that year for a period or periods amounting in all to one
+      hundred and eighty-two days or more.
+
+summary: >-
+  An individual who is in India for 182 days or more in a financial year is
+  resident in India for that year.
+
+inputs:
+  - name: days_in_india
+    type: integer
+    description: Days present in India during the financial year (1 Apr to 31 Mar).
+
+logic:
+  kind: threshold
+  input: days_in_india
+  operator: ">="
+  threshold: 182
+  returns:
+    true: RESIDENT
+    false: NOT_RESIDENT_BY_THIS_LIMB
+
+status: pending_validation
+
+notes: >-
+  Prototype rule pending validation by Kiyos's tax team. Day counting
+  conventions (arrival and departure days) need confirming.
+
+test_cases:
+  - name: "Exactly 182 days"
+    inputs: { days_in_india: 182 }
+    expected: true
+  - name: "181 days"
+    inputs: { days_in_india: 181 }
+    expected: false

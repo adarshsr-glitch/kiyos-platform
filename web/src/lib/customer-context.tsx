@@ -20,6 +20,11 @@ export function useCustomer(): CustomerContextValue {
   return value;
 }
 
+/** The same, or null outside the customer portal (e.g. the expert's case page). */
+export function useCustomerMaybe(): CustomerContextValue | null {
+  return useContext(CustomerContext);
+}
+
 export function CustomerProvider({ caseData, children }: { caseData: CaseDetail; children: ReactNode }) {
   const tier = tierOf(caseData);
   const firstName = tier === "onboarding" ? "" : caseData.client_name.split(" ")[0];
@@ -28,7 +33,3 @@ export function CustomerProvider({ caseData, children }: { caseData: CaseDetail;
   );
 }
 
-/** Client side: point the portal at another demo customer. */
-export function setPortalCase(caseId: number) {
-  document.cookie = `kiyos-case=${caseId}; path=/; max-age=${60 * 60 * 24 * 30}; samesite=lax`;
-}

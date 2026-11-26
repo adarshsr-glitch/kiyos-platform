@@ -55,26 +55,47 @@ class Rule(BaseModel):
 
     def evaluate_bool(self, inputs: dict[str, Any]) -> bool:
         """Evaluate the rule's condition. Raises ValueError on missing inputs."""
-        logic = self.logic
-        kind = logic.get("kind")
-        if kind == "threshold_count":
-            values = inputs.get(logic["within"])
-            if not isinstance(values, list):
-                raise ValueError(f"missing input: {logic['within']}")
-            count = sum(1 for v in values if v == logic["count_of"])
-            return _OPERATORS[logic["operator"]](count, logic["threshold"])
-        if kind == "threshold":
-            value = inputs.get(logic["input"])
-            if value is None:
-                raise ValueError(f"missing input: {logic['input']}")
-            return _OPERATORS[logic["operator"]](value, logic["threshold"])
-        raise ValueError(f"unsupported logic kind: {kind}")
+        return _evaluate(self.logic, inputs)
 
     def evaluate(self, inputs: dict[str, Any]) -> DerivationEntry:
         passed = self.evaluate_bool(inputs)
         returns = self.logic.get("returns") or {}
         output = returns.get(passed, returns.get(str(passed).lower(), passed))
         return DerivationEntry(rule_id=self.id, inputs_used=inputs, output=output)
+
+
+def _evaluate(logic: dict[str, Any], inputs: dict[str, Any]) -> bool:
+    """Interpret one logic block. Composite kinds nest further blocks."""
+    kind = logic.get("kind")
+    if kind == "threshold_count":
+        values = inputs.get(logic["within"])
+        if not isinstance(values, list):
+            raise ValueError(f"missing input: {logic['within']}")
+        count = sum(1 for v in values if v == logic["count_of"])
+        return _OPERATORS[logic["operator"]](count, logic["threshold"])
+    if kind == "threshold":
+        value = inputs.get(logic["input"])
+        if value is None:
+            raise ValueError(f"missing input: {logic['input']}")
+        return _OPERATORS[logic["operator"]](value, logic["threshold"])
+    if kind == "weighted_sum":
+        total = 0.0
+        for term in logic["terms"]:
+            value = inputs.get(term["input"])
+            if value is None:
+                raise ValueError(f"missing input: {term['input']}")
+            total += value * term.get("weight", 1)
+        return _OPERATORS[logic["operator"]](total, logic["threshold"])
+    if kind == "flag":
+        value = inputs.get(logic["input"])
+        if value is None:
+            raise ValueError(f"missing input: {logic['input']}")
+        return bool(value) is bool(logic.get("equals", True))
+    if kind == "all_of":
+        return all(_evaluate(c, inputs) for c in logic["conditions"])
+    if kind == "any_of":
+        return any(_evaluate(c, inputs) for c in logic["conditions"])
+    raise ValueError(f"unsupported logic kind: {kind}")
 
 
 @lru_cache(maxsize=1)

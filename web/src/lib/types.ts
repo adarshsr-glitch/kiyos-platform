@@ -13,6 +13,10 @@ export interface CaseListItem {
   open_items_count: number;
   open_topics_count: number;
   open_notices_count: number;
+  /** Customer questions waiting for an expert. */
+  open_tickets_count?: number;
+  /** Assessments in draft or review. */
+  awaiting_signoff_count?: number;
   plan: "free" | "premium";
   journey: Journey;
 }
@@ -31,7 +35,22 @@ export interface Fact {
   unit: string | null;
   source: string | null;
   as_of: string | null;
+  /** Exactly where the value came from (api/evidence.py). */
+  evidence?: Evidence | null;
+  /** Why the customer can't edit it themselves (from a document, or worked out), if so. */
+  locked?: string | null;
 }
+
+/** One line read from a document, with the page it sits on. */
+export type EvidenceLine = { page: number; label: string; value: string; section?: string };
+
+/** Where a value came from: a document line, an answer the customer gave, the expert, or demo data. */
+export type Evidence =
+  | { kind: "document"; document_id: number | null; filename: string; title: string; issuer: string | null; pages: number | null; lines: EvidenceLine[]; note?: string; /** A sample reference made for the prototype */ sample?: boolean }
+  | { kind: "answer"; channel: "WhatsApp" | "Onboarding"; question: string; answer: string; at: string | null }
+  | { kind: "said"; channel: "WhatsApp" | "Chat"; quote: string | null; said_at: string | null; confirmed_at: string | null; previous: string | null }
+  | { kind: "expert"; by: string | null; at: string | null }
+  | { kind: "demo" };
 
 export interface DocumentItem {
   id: number;
@@ -105,6 +124,10 @@ export interface Recommendation {
   rationale: string | null;
   status: RecommendationStatus;
   date: string;
+  country?: string | null;
+  amount?: number | null;
+  currency?: string | null;
+  deadline?: string | null;
 }
 
 export type ActionStatus = "open" | "blocked" | "done";
@@ -287,7 +310,7 @@ export interface Message {
   /** Free-plan classification of a customer question */
   category?: "generic" | "generic_unanswered" | "generic_over_limit" | "personal" | null;
   /** Call-to-action rendered under an agent message */
-  action?: { type: "plans" | "upload" | "verify" | string; label: string; href: string } | null;
+  action?: { type: "plans" | "upload" | "verify" | string; label: string; href: string; target?: string; token?: string; expires_at?: string } | null;
   /** WhatsApp quick-reply buttons offered with an agent message */
   options?: string[] | null;
   created_at: string;

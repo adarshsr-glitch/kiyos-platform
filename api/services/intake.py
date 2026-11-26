@@ -4,7 +4,7 @@ Need-first questions with a "Not sure" path on every step, then a bounded initia
 risk map whose rows each name the customer answer behind them, plus missing facts,
 confidence and an indicative price band. Value comes before capture: the name is
 asked only after the customer chooses to save the result. None of this counts
-toward the three free generic questions.
+toward the five free generic questions.
 
 Questions, findings and plans come from knowledge/assessment/initial-scan.yaml
 (a draft awaiting expert review); this module only interprets them.
@@ -26,7 +26,7 @@ SAVE_YES, SAVE_NO = "Yes, save it", "No thanks"
 _UNSURE_WORDS = {"not sure", "dont know", "don't know", "idk", "no idea", "unsure", "maybe", "?"}
 
 ASSESSMENT_ACTION = {"type": "assessment", "label": "Open my risk map", "href": "/portal/assessment"}
-PLANS_ACTION = {"type": "plans", "label": "Compare the two plans", "href": "/portal/upgrade"}
+PLANS_ACTION = {"type": "plans", "label": "Compare the two plans", "href": "/portal/plans"}
 
 
 @dataclass
@@ -100,10 +100,10 @@ def opening_messages() -> list[BotMessage]:
     return [
         BotMessage(
             content=(
-                "Hi, I'm Kiyos 👋 I help households with tax in both India and the US.\n\n"
-                "Answer a few quick questions — about five minutes, no forms or documents — and "
-                "I'll show you what likely needs attention in each country, what we'd still need "
-                "to know, and a price range. It's free and not a personal tax opinion."
+                "Hi, I'm Kiyos 👋 I help families with tax in India and the US.\n\n"
+                "A few quick questions (about five minutes, no documents) and I'll show you what "
+                "needs attention in each country, what's still unknown, and a price range. "
+                "Free, and not personal tax advice."
             )
         ),
         _ask(first),
@@ -179,13 +179,16 @@ def _summary(scan: dict) -> BotMessage:
             + f"\n*Confidence:* {scan['confidence']} — based only on your answers"
             + f"\n*Indicative price:* {inr(low)}–{inr(high)} incl. GST"
             + (" (mutual funds or property are quoted separately by an expert)" if extra else "")
-            + "\n\nThis is a first scan, not a personal tax position — a Kiyos expert confirms it on a paid plan."
+            + "\n\nA first scan, not a tax opinion. A Kiyos expert confirms it on a paid plan."
         )
     )
 
 
-def advance(intake: dict | None, text: str) -> tuple[dict, IntakeResult]:
-    """Apply one customer message to the intake state. Returns (new state, bot replies)."""
+def advance(intake: dict | None, text: str, known_name: str | None = None) -> tuple[dict, IntakeResult]:
+    """Apply one customer message to the intake state. Returns (new state, bot replies).
+
+    `known_name`: the sender's WhatsApp profile name, offered as a one-tap reply when we ask
+    for their name (they can still type a different one)."""
     state = dict(intake or {"step": "question", "answers": {}})
     answers = dict(state.get("answers") or {})
     result = IntakeResult()
@@ -212,7 +215,7 @@ def advance(intake: dict | None, text: str) -> tuple[dict, IntakeResult]:
         result.messages.append(_summary(scan))
         result.messages.append(
             BotMessage(
-                content="Want me to save this to a private Kiyos page so you can come back to it?",
+                content="Shall I save this so you can come back to it? Only you will be able to see it.",
                 options=[SAVE_YES, SAVE_NO],
             )
         )
@@ -226,7 +229,7 @@ def advance(intake: dict | None, text: str) -> tuple[dict, IntakeResult]:
             return state, result
         result.consent_saved = choice == SAVE_YES
         if result.consent_saved:
-            result.messages.append(BotMessage(content="Saved. What should I call you?"))
+            result.messages.append(BotMessage(content="Saved. What's your name?", options=[known_name] if known_name else None))
             state["step"] = "name"
         else:
             result.messages.append(_free_handoff(saved=False))
@@ -240,9 +243,16 @@ def advance(intake: dict | None, text: str) -> tuple[dict, IntakeResult]:
         result.messages.append(
             BotMessage(
                 content=(
-                    f"Thanks, {name.split()[0]}. Your risk map is saved privately — only you can open it."
+                    f"Thanks, {name.split()[0]}. Your risk map is ready, and only you can open it."
                 ),
                 action=ASSESSMENT_ACTION,
+            )
+        )
+        # The assessment as a PDF to keep (scope: "sends the customer a PDF after the questions").
+        result.messages.append(
+            BotMessage(
+                content="Here it is as a PDF to keep. It's a first look from your answers, not a tax opinion.",
+                action={"type": "document", "label": "Kiyos-initial-assessment.pdf", "href": "/portal/assessment"},
             )
         )
         result.messages.append(_free_handoff(saved=True))
@@ -256,9 +266,8 @@ def advance(intake: dict | None, text: str) -> tuple[dict, IntakeResult]:
 def _free_handoff(saved: bool) -> BotMessage:
     return BotMessage(
         content=(
-            "You can also ask me 3 general questions about India–US tax for free, like "
-            "\"What is RNOR?\". Anything about your own situation needs a plan, because an "
-            "expert has to check the answer."
+            "You can ask me 5 general questions for free, like \"What is RNOR?\". "
+            "Questions about your own situation go to an expert, which needs a plan."
             + ("" if saved else " Your summary stays in this chat.")
         ),
         action=PLANS_ACTION,

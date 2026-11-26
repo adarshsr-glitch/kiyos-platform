@@ -58,7 +58,7 @@ for _key, _value in dotenv_values(os.path.join(os.path.dirname(__file__), "..", 
     if _key in ("ANTHROPIC_API_KEY", "MODEL_REASONING", "CONFIDENCE_THRESHOLD") and _value:
         os.environ.setdefault(_key, _value)
 
-from db import init_db, get_session  # noqa: E402
+from db import async_session, init_db, get_session  # noqa: E402
 from infra.schema import (  # noqa: E402
     Case,
     Fact,
@@ -82,6 +82,22 @@ from infra.schema import (  # noqa: E402
 from engine.rules import load_rule  # noqa: E402
 from services import converse, intake  # noqa: E402
 from infra.journey import seed_journey, seed_prospects  # noqa: E402
+from infra.hni import enrich_persona, seed_hni  # noqa: E402
+import journeys  # noqa: E402
+import briefing  # noqa: E402
+import expert_entries  # noqa: E402
+import links  # noqa: E402
+import accounts  # noqa: E402
+import memory  # noqa: E402
+import rules_import  # noqa: E402
+import evaluation  # noqa: E402
+import inbox  # noqa: E402
+import profile_edits  # noqa: E402
+import demo_reset  # noqa: E402
+import desk  # noqa: E402
+import rules_library  # noqa: E402
+import continuity  # noqa: E402
+import evidence  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +111,8 @@ class FactOut(BaseModel):
     unit: Optional[str] = None
     source: Optional[str] = None
     as_of: Optional[str] = None
+    evidence: Optional[dict] = None  # where exactly the value came from (api/evidence.py)
+    locked: Optional[str] = None  # why the customer can't edit it (api/profile_edits.py), if so
 
 class DocumentOut(BaseModel):
     id: int
@@ -135,6 +153,8 @@ class CaseListItem(BaseModel):
     open_items_count: int = 0
     open_topics_count: int = 0
     open_notices_count: int = 0
+    open_tickets_count: int = 0             # customer questions waiting for an expert
+    awaiting_signoff_count: int = 0         # assessments in draft or review
 
 
 class MemberOut(BaseModel):
@@ -169,6 +189,11 @@ class RecommendationOut(BaseModel):
     rationale: Optional[str] = None
     status: str
     date: str
+    # Entered by the expert with a way to save: which country, what it could save, by when.
+    country: Optional[str] = None
+    amount: Optional[float] = None
+    currency: Optional[str] = None
+    deadline: Optional[str] = None
 
 
 class ActionItemOut(BaseModel):
@@ -304,6 +329,9 @@ async def lifespan(app: FastAPI):
     await init_db()
     await seed_journey()
     await seed_prospects()
+    await seed_hni()
+    await continuity.sync_all(async_session)
+    await accounts.seed_experts(async_session)
     yield
 
 
@@ -323,6 +351,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+app.include_router(journeys.router)
+app.include_router(briefing.router)
+app.include_router(expert_entries.router)
+app.include_router(links.router)
+app.include_router(accounts.router)
+app.include_router(memory.router)
+app.include_router(rules_import.router)
+app.include_router(evaluation.router)
+app.include_router(inbox.router)
+app.include_router(profile_edits.router)
+app.include_router(demo_reset.router)
+app.include_router(desk.router)
+app.include_router(rules_library.router)
 
 
 # ---------------------------------------------------------------------------
@@ -358,10 +401,15 @@ async def list_cases(session: AsyncSession = Depends(get_session)):
             selectinload(Case.topics),
             selectinload(Case.notices),
             selectinload(Case.conversations),
+            selectinload(Case.assessments),
         )
         .order_by(Case.updated_at.desc())
     )
     cases = result.scalars().all()
+    # Per-case queue counts, so the expert Home's numbers and the filtered Cases list agree.
+    open_tickets = dict((await session.execute(
+        select(Ticket.case_id, func.count(Ticket.id)).where(Ticket.status != "resolved").group_by(Ticket.case_id)
+    )).all())
     return [
         CaseListItem(
             id=c.id,
@@ -378,6 +426,8 @@ async def list_cases(session: AsyncSession = Depends(get_session)):
             open_items_count=sum(1 for i in c.action_items if i.status != "done"),
             open_topics_count=sum(1 for t in c.topics if t.status != "resolved"),
             open_notices_count=sum(1 for n in c.notices if n.status != "resolved"),
+            open_tickets_count=open_tickets.get(c.id, 0),
+            awaiting_signoff_count=sum(1 for a in c.assessments if a.status in ("draft", "in_review")),
         )
         for c in cases
     ]
@@ -421,7 +471,7 @@ async def get_case(case_id: int, session: AsyncSession = Depends(get_session)):
         created_at=case.created_at,
         updated_at=case.updated_at,
         facts=[
-            FactOut(id=f.id, key=f.key, value=f.value, unit=f.unit, source=f.source, as_of=f.as_of)
+            FactOut(id=f.id, key=f.key, value=f.value, unit=f.unit, source=f.source, as_of=f.as_of, evidence=f.evidence, locked=profile_edits.locked_reason(f))
             for f in case.facts
         ],
         documents=[
@@ -470,6 +520,7 @@ async def get_case(case_id: int, session: AsyncSession = Depends(get_session)):
                 id=r.id, topic_id=r.topic_id, author=r.author,
                 content=r.content, rationale=r.rationale,
                 status=r.status, date=r.date,
+                country=r.country, amount=r.amount, currency=r.currency, deadline=r.deadline,
             )
             for r in case.recommendations
         ],
@@ -549,6 +600,7 @@ async def list_case_recommendations(case_id: int, session: AsyncSession = Depend
             id=r.id, topic_id=r.topic_id, author=r.author,
             content=r.content, rationale=r.rationale,
             status=r.status, date=r.date,
+            country=r.country, amount=r.amount, currency=r.currency, deadline=r.deadline,
         )
         for r in result.scalars().all()
     ]
@@ -750,7 +802,7 @@ async def dashboard_activity(session: AsyncSession = Depends(get_session)):
 async def list_case_facts(case_id: int, session: AsyncSession = Depends(get_session)):
     result = await session.execute(select(Fact).where(Fact.case_id == case_id))
     return [
-        FactOut(id=f.id, key=f.key, value=f.value, unit=f.unit, source=f.source, as_of=f.as_of)
+        FactOut(id=f.id, key=f.key, value=f.value, unit=f.unit, source=f.source, as_of=f.as_of, evidence=f.evidence, locked=profile_edits.locked_reason(f))
         for f in result.scalars().all()
     ]
 
@@ -1028,7 +1080,7 @@ async def _set_controller(session: AsyncSession, conv_id: int, advisor: str, tak
     convo.controller = "advisor" if takeover else "agent"
     convo.controller_name = advisor if takeover else None
     note = (
-        f"{advisor}, your case captain, has joined the conversation."
+        f"{advisor}, your expert, has joined the conversation."
         if takeover else
         f"{advisor} has handed the conversation back to Kiyos. Ask me anything."
     )
@@ -1154,6 +1206,8 @@ async def review_assessment(assessment_id: int, body: ReviewIn, session: AsyncSe
         raise HTTPException(status_code=404, detail="Assessment not found")
     if a.status == "signed_off":
         raise HTTPException(status_code=409, detail="Assessment is already signed off")
+    if body.action == "sign_off" and await journeys.open_clarifications(session, a.case_id):
+        raise HTTPException(status_code=409, detail="A clarification is still open with the customer")
     if body.action == "request_changes" and not (body.note or "").strip():
         raise HTTPException(status_code=422, detail="Say what needs to change")
     a.status = "signed_off" if body.action == "sign_off" else "changes_requested"
@@ -1288,6 +1342,7 @@ async def upload_document(
         doc.doc_type = doc.doc_type or req.doc_type
     _record_event(session, case_id, uploaded_by, "document.uploaded", "document", doc.id,
                   {"label": safe_name, "doc_type": doc_type, "request_id": request_id})
+    await journeys.after_upload(session, case, doc, req if request_id is not None else None)
     await session.commit()
     return DocumentOut(id=doc.id, filename=doc.filename, doc_type=doc.doc_type,
                        status=doc.status, created_at=doc.created_at)
@@ -1392,7 +1447,8 @@ async def _intake_turn(session: AsyncSession, convo: Conversation, case: Case, t
     if guard is not None:
         replies = [intake.BotMessage(content=guard.content, action=guard.action)]
     else:
-        state, result = intake.advance(convo.intake, safe_text)
+        known = case.client_name if case and case.client_name and case.client_name != "New customer" else None
+        state, result = intake.advance(convo.intake, safe_text, known)
         convo.intake = state
         replies = result.messages
         if result.scan:
@@ -1585,7 +1641,7 @@ async def activate_plan(case_id: int, body: ActivateIn, session: AsyncSession = 
                     f"Payment received — {plan['name']}, {body.household}, {intake.inr(price)} incl. GST. "
                     "Your receipt, signed NDA and scope are in your workspace."
                 ),
-                action={"type": "overview", "label": "Open my workspace", "href": "/portal/dashboard"},
+                action={"type": "overview", "label": "Open my workspace", "href": "/portal/overview"},
             ),
             intake.BotMessage(
                 content=(
@@ -1607,6 +1663,13 @@ async def activate_plan(case_id: int, body: ActivateIn, session: AsyncSession = 
 
     _record_event(session, case_id, case.client_name, "plan.activated", "case", case_id,
                   {"label": f"{plan['name']} · {body.household} · {intake.inr(price)}"})
+    if case.demo_key:
+        # Demo personas get their illustrative case picture once they've paid.
+        await session.flush()
+        await enrich_persona(session, case)
+    # Everything the customer already gave (scan answers, documents) starts the workspace.
+    await session.flush()
+    await continuity.sync_case(session, case)
     await session.commit()
     return await get_case(case_id, session)
 
@@ -1696,6 +1759,8 @@ async def decide_profile_change(change_id: int, body: DecideIn, session: AsyncSe
             fact.value = change.proposed_value
             fact.source = "customer_confirmed"
             fact.as_of = _now().date().isoformat()
+            fact.evidence = evidence.said(change)
+        await journeys.after_change_confirmed(session, change)
     _record_event(
         session, change.case_id, body.by,
         "profile.change_confirmed" if change.status == "confirmed" else "profile.change_rejected",
