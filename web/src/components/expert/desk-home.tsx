@@ -13,7 +13,7 @@ import { RemindButton } from "./remind-button";
 import { KIND, KindTile, TONE } from "./kinds";
 
 const DISPLAY = "[font-family:var(--font-display),var(--font-inter),sans-serif]";
-const triage = (q: string, all: boolean) => `/expert/work?${q}${all ? "&all=1" : ""}`;
+const triage = (q: string, all: boolean) => `/expert/cases?view=triage&${q}${all ? "&all=1" : ""}`;
 
 /* ───────────────────────────────────────────── hero */
 

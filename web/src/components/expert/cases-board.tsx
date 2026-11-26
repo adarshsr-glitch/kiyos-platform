@@ -7,13 +7,14 @@
  * desk call as Home and Triage, so the three never disagree.
  */
 
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import Link from "next/link";
 import { ArrowRight, Check, ChevronRight, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { daysBetween, firstOf, fmt, plural, type CaseSummary, type Desk, type Reason, type Stage } from "@/lib/desk";
 import { Face } from "./face";
 import { KindTile } from "./kinds";
+import { Tabs } from "./tabs";
 
 const DISPLAY = "[font-family:var(--font-display),var(--font-inter),sans-serif]";
 
@@ -80,71 +81,67 @@ export function CasesBoard({ desk, initialView, initialStage, all, signedIn }: {
         )}
       </header>
 
-      {/* ───────── the pipeline */}
-      <section aria-label="Customers by stage" className="rounded-2xl bg-card p-2 shadow-[0_1px_2px_rgba(16,24,40,.05),0_0_0_1px_rgba(16,24,40,.06)]">
-        <ol className="grid grid-cols-2 gap-1 lg:grid-cols-4">
+      {/* ───────── the pipeline: four stages, each its own card, in order */}
+      <section aria-label="Customers by stage">
+        <ol className="grid grid-cols-2 gap-3 lg:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr] lg:items-stretch lg:gap-2">
           {STAGES.map((s, i) => {
             const inStage = cases.filter((c) => c.stage === s);
             const on = stage === s;
             return (
-              <li key={s} className="relative">
-                <button
-                  type="button"
-                  aria-pressed={on}
-                  onClick={() => setStage(on ? null : s)}
-                  className={cn("flex h-full w-full flex-col gap-3 rounded-xl px-4 py-3.5 text-left transition-colors", on ? "bg-[#0E3B2C] text-white" : "hover:bg-[#F5F4F0]")}
-                >
-                  <span className="flex items-center gap-2 text-[12.5px] font-medium">
-                    <i aria-hidden className={cn("h-2 w-2 rounded-full", STAGE[s].dot, on && s === "signed" && "bg-[#BFE3D1]")} />
-                    {STAGE[s].label}
-                  </span>
-                  <span className="flex items-end justify-between gap-3">
-                    <span className={cn("text-[34px] font-semibold leading-none tabular-nums tracking-[-0.02em]", DISPLAY, !inStage.length && !on && "text-muted-foreground/50")}>{inStage.length}</span>
-                    <span className="flex">
-                      {inStage.slice(0, 4).map((c, k) => (
-                        <span key={c.id} className={cn("rounded-full ring-2", on ? "ring-[#0E3B2C]" : "ring-card", k > 0 && "-ml-2")}>
-                          <Face name={c.customer} size={24} />
-                        </span>
-                      ))}
-                      {inStage.length > 4 && <span className={cn("ml-1.5 self-center text-[12px]", on ? "text-white/70" : "text-muted-foreground")}>+{inStage.length - 4}</span>}
+              <Fragment key={s}>
+                <li className="min-w-0">
+                  <button
+                    type="button"
+                    aria-pressed={on}
+                    onClick={() => setStage(on ? null : s)}
+                    className={cn(
+                      "relative flex h-full w-full flex-col gap-3 overflow-hidden rounded-2xl px-4 pb-3.5 pt-4 text-left transition-shadow",
+                      on
+                        ? "bg-[#0E3B2C] text-white shadow-[0_10px_24px_-12px_rgba(14,59,44,.5)]"
+                        : "bg-card shadow-[0_1px_2px_rgba(16,24,40,.05),0_0_0_1px_rgba(16,24,40,.07)] hover:shadow-[0_8px_20px_-12px_rgba(16,24,40,.3),0_0_0_1px_rgba(16,24,40,.12)]"
+                    )}
+                  >
+                    <span aria-hidden className={cn("absolute inset-x-0 top-0 h-1", STAGE[s].bar)} />
+                    <span className="flex items-center justify-between gap-2 text-[12.5px] font-medium">
+                      <span className="flex items-center gap-2">
+                        <span className={cn("grid h-5 w-5 place-items-center rounded-full text-[11px] font-semibold", on ? "bg-white/15" : "bg-[#F1F0EC] text-foreground/60")}>{i + 1}</span>
+                        {STAGE[s].label}
+                      </span>
+                      <span className={cn("text-[11.5px]", on ? "text-white/70" : "text-muted-foreground")}>{on ? "Showing" : "Filter"}</span>
                     </span>
-                  </span>
-                  <span className={cn("text-[12px]", on ? "text-white/70" : "text-muted-foreground")}>{STAGE[s].hint}</span>
-                </button>
-                {i < 3 && <ChevronRight aria-hidden className="absolute -right-2.5 top-1/2 z-10 hidden h-4 w-4 -translate-y-1/2 text-muted-foreground/50 lg:block" />}
-              </li>
+                    <span className="flex items-end justify-between gap-3">
+                      <span className={cn("text-[34px] font-semibold leading-none tabular-nums tracking-[-0.02em]", DISPLAY, !inStage.length && !on && "text-muted-foreground/50")}>{inStage.length}</span>
+                      <span className="flex">
+                        {inStage.slice(0, 4).map((c, k) => (
+                          <span key={c.id} className={cn("rounded-full ring-2", on ? "ring-[#0E3B2C]" : "ring-card", k > 0 && "-ml-2")}>
+                            <Face name={c.customer} size={24} />
+                          </span>
+                        ))}
+                        {inStage.length > 4 && <span className={cn("ml-1.5 self-center text-[12px]", on ? "text-white/70" : "text-muted-foreground")}>+{inStage.length - 4}</span>}
+                      </span>
+                    </span>
+                    <span className={cn("text-[12px]", on ? "text-white/70" : "text-muted-foreground")}>{STAGE[s].hint}</span>
+                  </button>
+                </li>
+                {i < STAGES.length - 1 && (
+                  <li aria-hidden className="hidden items-center justify-center lg:flex">
+                    <ChevronRight className="h-5 w-5 text-muted-foreground/50" />
+                  </li>
+                )}
+              </Fragment>
             );
           })}
         </ol>
-        <span aria-hidden className="mx-2 mb-1 mt-2 flex h-1.5 gap-[2px] overflow-hidden rounded-full">
-          {STAGES.map((s) => {
-            const n = cases.filter((c) => c.stage === s).length;
-            return n ? <i key={s} className={cn("block h-full", STAGE[s].bar)} style={{ width: `${(n / Math.max(1, cases.length)) * 100}%` }} /> : null;
-          })}
-        </span>
       </section>
 
       {/* ───────── views, search, sort */}
       <div className="flex flex-wrap items-center gap-3">
-        <div role="tablist" aria-label="View" className="flex flex-wrap gap-1">
-          {VIEWS.map((v) => {
-            const n = cases.filter((c) => v.has(c) && (!stage || c.stage === stage)).length;
-            const on = view === v.key;
-            return (
-              <button
-                key={v.key}
-                role="tab"
-                type="button"
-                aria-selected={on}
-                onClick={() => setView(v.key)}
-                className={cn("inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[13px]", on ? "bg-foreground text-background" : "text-foreground/70 hover:bg-black/[0.04]")}
-              >
-                {v.label}
-                <span className={cn("tabular-nums", on ? "text-background/60" : v.key === "late" && n ? "text-[#B42318]" : "text-muted-foreground")}>{n}</span>
-              </button>
-            );
-          })}
-        </div>
+        <Tabs
+          label="View"
+          value={view}
+          onChange={setView}
+          tabs={VIEWS.map((v) => ({ key: v.key, label: v.label, count: cases.filter((c) => v.has(c) && (!stage || c.stage === stage)).length, alert: v.key === "late" }))}
+        />
         <span className="flex-1" />
         {stage && (
           <button type="button" onClick={() => setStage(null)} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[#0E3B2C]/10 px-3 text-[12.5px] font-medium text-[#0E3B2C]">
@@ -239,7 +236,7 @@ function Row({ c, today, all }: { c: CaseSummary; today: string; all: boolean })
             })}
             {reasons.length > SHOW && (
               <li>
-                <Link href={`/expert/work?case=${c.id}${all ? "&all=1" : ""}`} className="relative z-10 pl-[30px] text-[12px] font-medium text-[#0E3B2C] hover:underline">
+                <Link href={`/expert/cases?view=triage&case=${c.id}${all ? "&all=1" : ""}`} className="relative z-10 pl-[30px] text-[12px] font-medium text-[#0E3B2C] hover:underline">
                   +{reasons.length - SHOW} more
                 </Link>
               </li>
@@ -303,7 +300,7 @@ function Row({ c, today, all }: { c: CaseSummary; today: string; all: boolean })
       <span className="flex justify-start lg:justify-end">
         {n > 0 ? (
           <Link
-            href={`/expert/work?case=${c.id}${all ? "&all=1" : ""}`}
+            href={`/expert/cases?view=triage&case=${c.id}${all ? "&all=1" : ""}`}
             className="relative z-10 inline-flex h-8 items-center gap-1.5 rounded-lg border bg-card px-3 text-[12.5px] font-semibold text-foreground hover:border-[#0E3B2C]/40"
           >
             Triage {n} <ArrowRight className="h-3.5 w-3.5" aria-hidden />

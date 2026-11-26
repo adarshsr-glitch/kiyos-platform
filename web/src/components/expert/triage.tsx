@@ -24,6 +24,7 @@ import { daysBetween, firstOf, fmt, plural, urgency, type Desk, type DeskRow, ty
 import { PdfBody } from "@/components/source/pdf-viewer";
 import { Face } from "./face";
 import { KIND, KindTile, TONE } from "./kinds";
+import { Tabs } from "./tabs";
 
 const DISPLAY = "[font-family:var(--font-display),var(--font-inter),sans-serif]";
 const GROUPS: { tier: Tier; label: string }[] = [
@@ -76,7 +77,7 @@ export function Triage({ desk, me, initial }: { desk: Desk; me: string | null; i
 
   // Keep the item in the URL so a refresh or a shared link lands on it.
   useEffect(() => {
-    const p = new URLSearchParams();
+    const p = new URLSearchParams({ view: "triage" });
     if (tier !== "all") p.set("tier", tier);
     if (extra.day) p.set("day", extra.day);
     if (extra.kind) p.set("kind", extra.kind);
@@ -143,29 +144,18 @@ export function Triage({ desk, me, initial }: { desk: Desk; me: string | null; i
       <section aria-label="Your work" className={cn("flex min-h-0 flex-col border-r bg-[#FBFAF7]", current && "hidden md:flex")}>
         <div className="px-[18px] pb-3 pt-5">
           <h1 className={cn("flex items-baseline gap-2 text-[22px] font-semibold tracking-[-0.01em]", DISPLAY)}>
-            Triage
+            <span className="sr-only">Cases: </span>Triage
             <span className="font-sans text-[13.5px] font-normal text-muted-foreground">
               {plural(count("all"), "item")} · {plural(desk.customers, "customer")}
             </span>
           </h1>
-          <div role="tablist" aria-label="Show" className="mt-3.5 flex flex-wrap gap-1">
-            {TABS.map((t) => {
-              const on = tier === t.key && !extra.day;
-              return (
-                <button
-                  key={t.key}
-                  role="tab"
-                  type="button"
-                  aria-selected={on}
-                  onClick={() => (setTier(t.key), setExtra({}))}
-                  className={cn("inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px]", on ? "bg-foreground text-background" : "text-foreground/70 hover:bg-muted")}
-                >
-                  {t.label}
-                  <span className={cn("tabular-nums", on ? "text-background/60" : t.key === "late" && count("late") ? "text-[#B42318]" : "text-muted-foreground")}>{count(t.key)}</span>
-                </button>
-              );
-            })}
-          </div>
+          <Tabs
+            className="mt-3.5"
+            label="Show"
+            value={extra.day ? null : tier}
+            onChange={(k) => (setTier(k), setExtra({}))}
+            tabs={TABS.map((t) => ({ key: t.key, label: t.label, count: count(t.key), alert: t.key === "late" }))}
+          />
           {extra.case && (
             <Link href={`/expert/cases/${extra.case}`} className="mt-2 flex items-center gap-1 text-[12.5px] font-medium text-[#0E3B2C] hover:underline">
               <ArrowLeft className="h-3.5 w-3.5" aria-hidden /> Back to {extraLabel}&apos;s case

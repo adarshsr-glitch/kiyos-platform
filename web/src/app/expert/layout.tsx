@@ -5,7 +5,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Home,
-  Inbox,
   Briefcase,
   BookOpen,
   Gauge,
@@ -19,7 +18,6 @@ import { ExpertBell } from "@/components/case/expert-inbox";
 // Only sections that exist. (Documents, audit and settings live inside each case.)
 const NAV_ITEMS: { label: string; href: string; icon: typeof Home; exact?: boolean; disabled?: boolean }[] = [
   { label: "Home", href: "/expert", icon: Home, exact: true },
-  { label: "Triage", href: "/expert/work", icon: Inbox },
   { label: "Cases", href: "/expert/cases", icon: Briefcase },
   { label: "Rules", href: "/expert/rules", icon: BookOpen },
   { label: "Agent quality", href: "/expert/quality", icon: Gauge },

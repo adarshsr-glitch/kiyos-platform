@@ -10,11 +10,14 @@
  * restates or interprets the law (C-03).
  */
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, BookOpen, Check, ChevronDown, CircleAlert, FileCode2, Scale, Search, X } from "lucide-react";
+import { ArrowRight, BookOpen, Check, ChevronDown, CircleAlert, FileCode2, Flag, Loader2, Scale, Search, X } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Face } from "./face";
+import { Tabs } from "./tabs";
 
 const DISPLAY = "[font-family:var(--font-display),var(--font-inter),sans-serif]";
 
@@ -37,15 +40,31 @@ export type LibraryRule = {
   path: string;
   yaml: string | null;
   cited: { assessments: number; answers: number; cases: { id: number; customer: string }[] };
+  added: string | null;
+  changed: string | null;
+  flags: Flag[];
 };
+type Flag = { id: number; rule_id: string; note: string; by: string; at: string; resolved_at: string | null; resolved_by: string | null };
 
-const COUNTRY: Record<string, string> = { IN: "India", US: "United States" };
+const dateOf = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" }) : null);
+const daysAgo = (iso: string | null) => (iso ? Math.floor((Date.now() - Date.parse(iso)) / 864e5) : Infinity);
+
+/** Why a written rule needs a look: facts from its tests, flags and where it has been cited. */
+function attentionOf(r: LibraryRule): string[] {
+  const out: string[] = [];
+  const failing = r.tests.filter((t) => !t.passed).length;
+  if (failing) out.push(`${failing} test${failing === 1 ? "" : "s"} failing`);
+  const open = r.flags.filter((f) => !f.resolved_at).length;
+  if (open) out.push(`${open} open flag${open === 1 ? "" : "s"}`);
+  if (r.status !== "active" && r.cited.answers) out.push(`cited in ${r.cited.answers} answer${r.cited.answers === 1 ? "" : "s"} before validation`);
+  return out;
+}
+
 const LAW: [RegExp, string][] = [
   [/^IN-ITA/, "Income Tax Act"],
   [/^US-IRC/, "Internal Revenue Code"],
 ];
 const OP: Record<string, string> = { ">=": "is at least", ">": "is more than", "<=": "is at most", "<": "is less than", "==": "equals" };
-const SYM: Record<string, string> = { ">=": "≥", ">": ">", "<=": "≤", "<": "<", "==": "=" };
 
 const lawOf = (s: { id?: string; section?: string }) => {
   const name = LAW.find(([re]) => re.test(s.id ?? ""))?.[1] ?? s.id ?? "Source";
@@ -112,73 +131,88 @@ function sentence(r: LibraryRule, l: Logic): string {
   }
 }
 
-/** One short line for the card: the check in symbols, then what it gives when met. */
-function oneLine(r: LibraryRule): string {
-  const l = r.logic;
-  const sym = (x: Logic): string =>
-    x.kind === "threshold"
-      ? `${String(x.input).replace(/_/g, " ").replace(/\bus\b/g, "US").replace(/\bindia\b/g, "India")} ${SYM[String(x.operator)]} ${x.threshold}`
-      : x.kind === "threshold_count"
-        ? `${x.count_of} years ${SYM[String(x.operator)]} ${x.threshold}`
-        : x.kind === "flag"
-          ? `${String(x.input).replace(/_/g, " ")}${x.equals === false ? " is false" : ""}`
-          : x.kind === "weighted_sum"
-            ? `weighted days ${SYM[String(x.operator)]} ${x.threshold}`
-            : x.kind === "all_of" || x.kind === "any_of"
-              ? ((x.conditions as Logic[]) ?? []).map(sym).join(x.kind === "all_of" ? " and " : " or ")
-              : String(x.kind);
-  const yes = (l.returns as Record<string, unknown> | undefined)?.true;
-  return `${sym(l)}${yes ? ` → ${human(yes)}` : ""}`;
-}
+export type IndexEntry = { id: string; country: string; area: string; title: string; law: string | null; section: string | null; kind: string; status: string };
 
-export function RulesLibrary({ rules, versions }: { rules: LibraryRule[]; versions: React.ReactNode }) {
-  const [country, setCountry] = useState<"all" | string>("all");
-  const [status, setStatus] = useState<"all" | "active" | "pending">("all");
+const STATUS: Record<string, { label: string; pill: string; dot: string }> = {
+  active: { label: "In use", pill: "bg-[#DDF0E5] text-[#0F5132]", dot: "bg-[#0F5132]" },
+  pending_validation: { label: "Waiting for validation", pill: "bg-[#FBF0DE] text-[#7A3F06]", dot: "bg-[#C9822B]" },
+  not_written: { label: "Not written yet", pill: "bg-[#F1F0EC] text-foreground/55", dot: "bg-[#D9D7D0]" },
+};
+const statusOf = (s: string) => STATUS[s] ?? (s === "draft" ? STATUS.pending_validation : { label: s.replace(/_/g, " "), pill: "bg-[#FBF0DE] text-[#7A3F06]", dot: "bg-[#C9822B]" });
+const KIND_LABEL: Record<string, string> = {
+  test: "Test", definition: "Definition", caveat: "Caveat", exemption: "Exemption", deduction: "Deduction", rate: "Rate", threshold: "Threshold",
+  valuation: "Valuation", withholding: "Withholding", procedure: "Procedure", deadline: "Deadline", disclosure: "Disclosure", penalty: "Penalty", relief: "Relief", rule: "Rule",
+};
+const COUNTRY_TAB: Record<string, string> = { IN: "India", US: "United States", "IN-US": "Treaty" };
+type StatusFilter = "all" | "written" | "active" | "pending" | "not_written";
+
+export function RulesLibrary({ rules, index, versions, me }: { rules: LibraryRule[]; index: IndexEntry[]; versions: React.ReactNode; me: string | null }) {
+  const [country, setCountry] = useState<string>("all");
+  const [status, setStatus] = useState<StatusFilter>("all");
   const [q, setQ] = useState("");
   const [open, setOpen] = useState<string | null>(null);
-  const detailRef = useRef<HTMLLIElement>(null);
+  const [areasOpen, setAreasOpen] = useState<Set<string>>(() => new Set(index.filter((e) => e.status !== "not_written").map((e) => e.area)));
+  const byId = useMemo(() => new Map(rules.map((r) => [r.id, r])), [rules]);
+  const openRule = (id: string) => {
+    const e = index.find((x) => x.id === id);
+    setCountry("all");
+    setStatus("all");
+    setQ("");
+    if (e) setAreasOpen((s) => new Set(s).add(e.area));
+    setOpen(id);
+    setTimeout(() => document.getElementById(`rule-row-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+  };
+  const attention = rules.map((r) => ({ r, why: attentionOf(r) })).filter((x) => x.why.length);
+  const recent = [...rules].sort((a, b) => (b.added ?? "").localeCompare(a.added ?? "")).slice(0, 5);
 
   const tests = rules.flatMap((r) => r.tests);
   const passing = tests.filter((t) => t.passed).length;
-  const active = rules.filter((r) => !pending(r)).length;
-  const citedTimes = rules.reduce((n, r) => n + r.cited.assessments + r.cited.answers, 0);
+  const written = index.filter((e) => e.status !== "not_written").length;
+  const active = index.filter((e) => e.status === "active").length;
 
   const shown = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    return rules.filter(
-      (r) =>
-        (country === "all" || r.jurisdiction === country) &&
-        (status === "all" || (status === "active" ? !pending(r) : pending(r))) &&
-        (!needle || [r.id, r.summary, ...r.sources.map((s) => `${s.section} ${s.passage}`)].some((s) => s?.toLowerCase().includes(needle)))
+    return index.filter(
+      (e) =>
+        (country === "all" || e.country === country) &&
+        (status === "all" ||
+          (status === "written" && e.status !== "not_written") ||
+          (status === "active" && e.status === "active") ||
+          (status === "pending" && e.status !== "active" && e.status !== "not_written") ||
+          (status === "not_written" && e.status === "not_written")) &&
+        (!needle || [e.id, e.title, e.law, e.section, e.area, byId.get(e.id)?.summary].some((s) => s?.toLowerCase().includes(needle)))
     );
-  }, [rules, country, status, q]);
+  }, [index, country, status, q, byId]);
 
-  const groups = useMemo(() => {
-    const m = new Map<string, LibraryRule[]>();
-    for (const r of shown) {
-      const k = `${r.jurisdiction}|${r.topic}|${r.tax_year}`;
-      m.set(k, [...(m.get(k) ?? []), r]);
-    }
+  const areas = useMemo(() => {
+    const m = new Map<string, IndexEntry[]>();
+    for (const e of shown) m.set(e.area, [...(m.get(e.area) ?? []), e]);
     return Array.from(m.entries());
   }, [shown]);
+  const filtering = !!q.trim() || status !== "all";
+  const toggleArea = (a: string) =>
+    setAreasOpen((s) => {
+      const n = new Set(s);
+      if (n.has(a)) n.delete(a);
+      else n.add(a);
+      return n;
+    });
 
-  useEffect(() => {
-    if (open) detailRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [open]);
-
-  const tiles = [
-    { key: "active", label: "In use", value: active, note: "Kiyos answers only from these", tone: "ok" as const, onClick: () => setStatus(status === "active" ? "all" : "active"), on: status === "active" },
-    { key: "pending", label: "Waiting for validation", value: rules.length - active, note: "not used to answer until the tax team validates them", tone: "wait" as const, onClick: () => setStatus(status === "pending" ? "all" : "pending"), on: status === "pending" },
-    { key: "tests", label: "Tests", value: `${passing}/${tests.length}`, note: passing === tests.length ? "all pass, run when this page opened" : `${tests.length - passing} failing`, tone: passing === tests.length ? ("ok" as const) : ("bad" as const) },
-    { key: "cited", label: "Cited", value: citedTimes, note: "times in assessments and answers", tone: "plain" as const },
+  const tiles: { key: StatusFilter | "tests"; label: string; value: string | number; note: string; dot: string; bar?: number }[] = [
+    { key: "all", label: "In the index", value: index.length, note: "rules Kiyos needs, across India, the US and the treaty", dot: "bg-[#7C8595]" },
+    { key: "written", label: "Written", value: written, note: `${Math.round((written / Math.max(1, index.length)) * 100)}% of the index so far`, dot: "bg-[#1D6B5C]", bar: written / Math.max(1, index.length) },
+    { key: "active", label: "In use", value: active, note: "Kiyos answers only from these", dot: "bg-[#0F5132]" },
+    { key: "tests", label: "Tests", value: `${passing}/${tests.length}`, note: passing === tests.length ? "all pass, run when this page opened" : `${tests.length - passing} failing`, dot: passing === tests.length ? "bg-[#5FB58A]" : "bg-[#B42318]" },
   ];
 
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
-        <div className="max-w-[720px]">
+        <div className="max-w-[760px]">
           <h1 className={cn("text-[26px] font-semibold tracking-[-0.015em]", DISPLAY)}>Rules</h1>
-          <p className="mt-0.5 text-[13.5px] leading-relaxed text-muted-foreground">The tax rules Kiyos applies. Each one is written by the tax team, quotes the law it comes from and is tested. Kiyos answers only from rules in use; anything else goes to an expert.</p>
+          <p className="mt-0.5 text-[13.5px] leading-relaxed text-muted-foreground">
+            The knowledge Kiyos reasons from: an index of every law, test, threshold, caveat and deadline it needs across India, the US and the treaty. The tax team writes each rule, quoting the law, and validates it; Kiyos answers only from rules in use and hands everything else to an expert.
+          </p>
         </div>
         <a href="#h-versions" className="inline-flex h-9 items-center gap-1.5 rounded-[10px] border bg-card px-3.5 text-[13px] font-semibold text-foreground hover:border-[#0E3B2C]/40">
           Import from the spreadsheet <ArrowRight className="h-3.5 w-3.5" aria-hidden />
@@ -187,116 +221,179 @@ export function RulesLibrary({ rules, versions }: { rules: LibraryRule[]; versio
 
       <section aria-label="The rule library at a glance" className="grid grid-cols-2 gap-1 rounded-2xl bg-card p-2 shadow-[0_1px_2px_rgba(16,24,40,.05),0_0_0_1px_rgba(16,24,40,.06)] lg:grid-cols-4">
         {tiles.map((t) => {
-          const Tag = t.onClick ? "button" : "div";
+          const clickable = t.key !== "tests";
+          const on = clickable && status === t.key && t.key !== "all";
+          const Tag = clickable ? "button" : "div";
           return (
             <Tag
               key={t.key}
-              {...(t.onClick ? { type: "button" as const, onClick: t.onClick, "aria-pressed": t.on } : {})}
-              className={cn("flex flex-col gap-2.5 rounded-xl px-4 py-3.5 text-left", t.onClick && (t.on ? "bg-[#0E3B2C] text-white" : "hover:bg-[#F5F4F0]"))}
+              {...(clickable ? { type: "button" as const, onClick: () => setStatus(on || t.key === "all" ? "all" : (t.key as StatusFilter)), "aria-pressed": on } : {})}
+              className={cn("flex flex-col gap-2.5 rounded-xl px-4 py-3.5 text-left", clickable && (on ? "bg-[#0E3B2C] text-white" : "hover:bg-[#F5F4F0]"))}
             >
               <span className="flex items-center gap-2 text-[12.5px] font-medium">
-                <i aria-hidden className={cn("h-2 w-2 rounded-full", t.tone === "ok" ? "bg-[#5FB58A]" : t.tone === "wait" ? "bg-[#C9822B]" : t.tone === "bad" ? "bg-[#B42318]" : "bg-[#7C8595]")} />
+                <i aria-hidden className={cn("h-2 w-2 rounded-full", t.dot)} />
                 {t.label}
               </span>
               <span className={cn("text-[32px] font-semibold leading-none tabular-nums tracking-[-0.02em]", DISPLAY)}>{t.value}</span>
-              <span className={cn("text-[12px]", t.on ? "text-white/70" : "text-muted-foreground")}>{t.note}</span>
+              {t.bar !== undefined && (
+                <span aria-hidden className={cn("h-1.5 overflow-hidden rounded-full", on ? "bg-white/20" : "bg-[#EFEDE8]")}>
+                  <span className={cn("block h-full rounded-full", on ? "bg-[#BFE3D1]" : "bg-[#1D6B5C]")} style={{ width: `${Math.max(2, t.bar * 100)}%` }} />
+                </span>
+              )}
+              <span className={cn("text-[12px]", on ? "text-white/70" : "text-muted-foreground")}>{t.note}</span>
             </Tag>
           );
         })}
       </section>
 
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-3 lg:grid-cols-2">
+        <section aria-labelledby="h-attention" className="rounded-2xl bg-card shadow-[0_1px_2px_rgba(16,24,40,.05),0_0_0_1px_rgba(16,24,40,.06)]">
+          <h2 id="h-attention" className="flex items-center gap-2 px-4 pb-2 pt-3.5 text-[14px] font-semibold">
+            <CircleAlert className={cn("h-4 w-4", attention.length ? "text-[#B42318]" : "text-muted-foreground")} aria-hidden /> Needs attention
+            <span className="text-[12.5px] font-normal text-muted-foreground">failing tests, flags, or cited before validation</span>
+          </h2>
+          {attention.length === 0 ? (
+            <p className="px-4 pb-4 text-[13px] text-muted-foreground">Nothing. Every written rule passes its tests and has no open flags.</p>
+          ) : (
+            <ul className="pb-1.5">
+              {attention.map(({ r, why }) => (
+                <li key={r.id}>
+                  <button type="button" onClick={() => openRule(r.id)} className="flex w-full items-center gap-3 border-t border-[#EFEDE8] px-4 py-2.5 text-left hover:bg-[#FAF9F6]">
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] font-semibold">{r.summary}</span>
+                      <span className="mt-0.5 flex flex-wrap gap-1.5">
+                        {why.map((w) => (
+                          <span key={w} className="rounded-full bg-[#FDEDEB] px-2 py-0.5 text-[11.5px] font-medium text-[#B42318]">{w}</span>
+                        ))}
+                      </span>
+                    </span>
+                    <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+        <section aria-labelledby="h-recent" className="rounded-2xl bg-card shadow-[0_1px_2px_rgba(16,24,40,.05),0_0_0_1px_rgba(16,24,40,.06)]">
+          <h2 id="h-recent" className="flex items-center gap-2 px-4 pb-2 pt-3.5 text-[14px] font-semibold">
+            Recently added <span className="text-[12.5px] font-normal text-muted-foreground">newest first, from the repository&apos;s history</span>
+          </h2>
+          <ul className="pb-1.5">
+            {recent.map((r) => (
+              <li key={r.id}>
+                <button type="button" onClick={() => openRule(r.id)} className="flex w-full items-center gap-3 border-t border-[#EFEDE8] px-4 py-2.5 text-left hover:bg-[#FAF9F6]">
+                  <span className="w-[86px] shrink-0 text-[12px] tabular-nums text-muted-foreground">{dateOf(r.added) ?? "Not committed"}</span>
+                  <span className="min-w-0 flex-1 truncate text-[13px]">{r.summary}</span>
+                  {daysAgo(r.added) <= 7 && <span className="shrink-0 rounded-full bg-[#E6EEFA] px-2 py-0.5 text-[11px] font-semibold text-[#1F4E8C]">New</span>}
+                  <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", statusOf(r.status).dot)} aria-label={statusOf(r.status).label} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      </div>
+
       <div className="flex flex-wrap items-center gap-3">
-        <div role="tablist" aria-label="Country" className="flex gap-1">
-          {["all", ...Array.from(new Set(rules.map((r) => r.jurisdiction)))].map((c) => {
-            const n = c === "all" ? rules.length : rules.filter((r) => r.jurisdiction === c).length;
-            return (
-              <button key={c} role="tab" type="button" aria-selected={country === c} onClick={() => setCountry(c)} className={cn("inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[13px]", country === c ? "bg-foreground text-background" : "text-foreground/70 hover:bg-black/[0.04]")}>
-                {c === "all" ? "All" : COUNTRY[c] ?? c}
-                <span className={cn("tabular-nums", country === c ? "text-background/60" : "text-muted-foreground")}>{n}</span>
-              </button>
-            );
-          })}
-        </div>
+        <Tabs
+          label="Country"
+          value={country}
+          onChange={setCountry}
+          tabs={["all", "IN", "US", "IN-US"].filter((c) => c === "all" || index.some((e) => e.country === c)).map((c) => ({ key: c, label: c === "all" ? "All" : COUNTRY_TAB[c], count: c === "all" ? index.length : index.filter((e) => e.country === c).length }))}
+        />
+        <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)} aria-label="Status" className="h-8 rounded-lg border bg-card px-2.5 text-[13px] outline-none focus:border-[#0E3B2C]">
+          <option value="all">Any status</option>
+          <option value="written">Written</option>
+          <option value="active">In use</option>
+          <option value="pending">Waiting for validation</option>
+          <option value="not_written">Not written yet</option>
+        </select>
         <span className="flex-1" />
-        {status !== "all" && (
-          <button type="button" onClick={() => setStatus("all")} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[#0E3B2C]/10 px-3 text-[12.5px] font-medium text-[#0E3B2C]">
-            {status === "active" ? "In use" : "Waiting for validation"} <X className="h-3.5 w-3.5" aria-label="Clear" />
-          </button>
-        )}
         <label className="relative">
-          <span className="sr-only">Search rules</span>
+          <span className="sr-only">Search the index</span>
           <Search aria-hidden className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search rule, section or wording" className="h-9 w-[260px] rounded-[10px] border bg-card pl-9 pr-3 text-[13px] outline-none focus:border-[#0E3B2C]" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search a topic, section or rule" className="h-9 w-[260px] rounded-[10px] border bg-card pl-9 pr-3 text-[13px] outline-none focus:border-[#0E3B2C]" />
         </label>
       </div>
 
-      {groups.length === 0 && <p className="rounded-2xl bg-card px-5 py-10 text-center text-[13.5px] text-muted-foreground shadow-[0_0_0_1px_rgba(16,24,40,.06)]">No rules match.</p>}
+      {areas.length === 0 && <p className="rounded-2xl bg-card px-5 py-10 text-center text-[13.5px] text-muted-foreground shadow-[0_0_0_1px_rgba(16,24,40,.06)]">Nothing in the index matches.</p>}
 
-      {groups.map(([key, list]) => {
-        const [j, topic, year] = key.split("|");
-        return (
-          <section key={key} aria-label={`${COUNTRY[j] ?? j}, ${topic}`}>
-            <h2 className="mb-3 flex flex-wrap items-baseline gap-x-2 text-[15px] font-semibold">
-              {COUNTRY[j] ?? j} · {topic.charAt(0).toUpperCase() + topic.slice(1).replace(/-/g, " ")}
-              <span className="text-[12.5px] font-normal text-muted-foreground">
-                Tax year {year} · {list.length} {list.length === 1 ? "rule" : "rules"}
-              </span>
-            </h2>
-            <ol className="grid grid-flow-row-dense grid-cols-[minmax(0,1fr)] gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {list.map((r) => {
-                const on = open === r.id;
-                const pass = r.tests.filter((t) => t.passed).length;
-                const times = r.cited.assessments + r.cited.answers;
-                return (
-                  <Fragment key={r.id}>
-                    <li className="min-w-0">
-                      <button
-                        type="button"
-                        aria-expanded={on}
-                        aria-controls={`rule-${r.id}`}
-                        onClick={() => setOpen(on ? null : r.id)}
-                        className={cn(
-                          "flex h-full w-full flex-col gap-3 rounded-2xl bg-card p-4 text-left shadow-[0_1px_2px_rgba(16,24,40,.05),0_0_0_1px_rgba(16,24,40,.06)] transition-shadow hover:shadow-[0_8px_24px_-12px_rgba(16,24,40,.25),0_0_0_1px_rgba(16,24,40,.1)]",
-                          on && "shadow-[0_10px_30px_-12px_rgba(14,59,44,.28),0_0_0_1.5px_#0E3B2C]"
+      <ol className="flex flex-col gap-3">
+        {areas.map(([area, entries]) => {
+          const all = index.filter((e) => e.area === area);
+          const done = all.filter((e) => e.status !== "not_written").length;
+          const isOpen = filtering || areasOpen.has(area);
+          const c = all[0]?.country;
+          return (
+            <li key={area} className="overflow-hidden rounded-2xl bg-card shadow-[0_1px_2px_rgba(16,24,40,.05),0_0_0_1px_rgba(16,24,40,.06)]">
+              <button type="button" aria-expanded={isOpen} onClick={() => toggleArea(area)} className="flex w-full items-center gap-4 px-4 py-3.5 text-left hover:bg-[#FAF9F6]">
+                <ChevronDown className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", !isOpen && "-rotate-90")} aria-hidden />
+                <span className="w-[42px] shrink-0 rounded-md bg-[#F1F0EC] px-1.5 py-0.5 text-center text-[11px] font-semibold tracking-wide text-foreground/70">{c === "IN-US" ? "IN·US" : c}</span>
+                <span className="min-w-0 flex-1">
+                  <span className={cn("block text-[15px] font-semibold", DISPLAY)}>{area}</span>
+                  <span className="block text-[12.5px] text-muted-foreground">
+                    {done} of {all.length} written{filtering && entries.length !== all.length ? ` · ${entries.length} match` : ""}
+                  </span>
+                </span>
+                <span aria-hidden className="hidden h-1.5 w-[120px] overflow-hidden rounded-full bg-[#EFEDE8] sm:block">
+                  <span className="block h-full rounded-full bg-[#1D6B5C]" style={{ width: `${(done / all.length) * 100}%` }} />
+                </span>
+              </button>
+              {isOpen && (
+                <ul className="border-t border-[#EFEDE8]">
+                  {entries.map((e) => {
+                    const rule = byId.get(e.id);
+                    const st = statusOf(e.status);
+                    const on = open === e.id;
+                    const pass = rule ? rule.tests.filter((t) => t.passed).length : 0;
+                    const rowInner = (
+                      <>
+                        <span className="w-[88px] shrink-0 text-[11.5px] font-medium text-muted-foreground">{KIND_LABEL[e.kind] ?? e.kind}</span>
+                        <span className="min-w-0 flex-1">
+                          <span className={cn("block text-[13.5px] leading-snug", rule ? "font-semibold text-foreground" : "text-foreground/75")}>{e.title}</span>
+                          <span className="mt-0.5 block truncate text-[12px] text-muted-foreground">
+                            {[e.law, e.section && (e.law?.startsWith("Internal") ? `§ ${e.section}` : e.law?.startsWith("India") ? e.section : `s. ${e.section}`)].filter(Boolean).join(" · ")}
+                            {rule ? ` · ${e.id}` : ""}
+                          </span>
+                        </span>
+                        {rule && (
+                          <span className={cn("hidden shrink-0 items-center gap-1 text-[12px] tabular-nums sm:inline-flex", pass === rule.tests.length ? "text-[#0F5132]" : "font-semibold text-[#B42318]")}>
+                            {pass === rule.tests.length ? <Check className="h-3.5 w-3.5" aria-hidden /> : <CircleAlert className="h-3.5 w-3.5" aria-hidden />}
+                            {pass}/{rule.tests.length} tests
+                          </span>
                         )}
-                      >
-                        <span className="flex items-center gap-2">
-                          <span className="rounded-md bg-[#F1F0EC] px-1.5 py-0.5 text-[11px] font-semibold tracking-wide text-foreground/70">{r.jurisdiction}</span>
-                          <span className={cn("inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-medium", pending(r) ? "bg-[#FBF0DE] text-[#7A3F06]" : "bg-[#DDF0E5] text-[#0F5132]")}>
-                            <i aria-hidden className={cn("h-1.5 w-1.5 rounded-full", pending(r) ? "bg-[#C9822B]" : "bg-[#0F5132]")} />
-                            {pending(r) ? "Waiting for validation" : "In use"}
-                          </span>
-                          <span className={cn("ml-auto inline-flex items-center gap-1 text-[12px] tabular-nums", pass === r.tests.length ? "text-[#0F5132]" : "font-semibold text-[#B42318]")}>
-                            {pass === r.tests.length ? <Check className="h-3.5 w-3.5" aria-hidden /> : <CircleAlert className="h-3.5 w-3.5" aria-hidden />}
-                            {pass}/{r.tests.length} tests
-                          </span>
+                        <span className={cn("inline-flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 text-[12px] font-medium", st.pill)}>
+                          <i aria-hidden className={cn("h-1.5 w-1.5 rounded-full", st.dot)} />
+                          {st.label}
                         </span>
-                        <span className={cn("line-clamp-3 text-[15.5px] font-semibold leading-snug", DISPLAY)}>{r.summary}</span>
-                        <span className="rounded-lg bg-[#F5F4F0] px-2.5 py-1.5 font-mono text-[11.5px] leading-snug text-foreground/75">{oneLine(r)}</span>
-                        <span className="mt-auto flex items-center justify-between gap-3 border-t border-[#EFEDE8] pt-2.5 text-[12px] text-muted-foreground">
-                          <span className="flex min-w-0 items-center gap-1.5">
-                            <Scale className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                            <span className="truncate">{r.sources[0] ? lawOf(r.sources[0]) : "No source"}</span>
-                          </span>
-                          <span className="flex shrink-0 items-center gap-2">
-                            {times > 0 && <span>Cited {times}×</span>}
-                            <ChevronDown className={cn("h-4 w-4 transition-transform", on && "rotate-180")} aria-hidden />
-                          </span>
-                        </span>
-                      </button>
-                    </li>
-                    {on && (
-                      <li ref={detailRef} id={`rule-${r.id}`} className="col-span-full min-w-0">
-                        <RuleDetail r={r} onClose={() => setOpen(null)} />
-                      </li>
-                    )}
-                  </Fragment>
-                );
-              })}
-            </ol>
-          </section>
-        );
-      })}
+                        {rule ? <ChevronDown className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", on && "rotate-180")} aria-hidden /> : <span className="w-4 shrink-0" />}
+                      </>
+                    );
+                    return (
+                      <Fragment key={e.id}>
+                        <li id={`rule-row-${e.id}`} className="scroll-mt-4 border-b border-[#EFEDE8] last:border-0">
+                          {rule ? (
+                            <button type="button" aria-expanded={on} onClick={() => setOpen(on ? null : e.id)} className={cn("flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-[#FAF9F6]", on && "bg-[#F5F4F0]")}>
+                              {rowInner}
+                            </button>
+                          ) : (
+                            <div className="flex items-center gap-3 px-4 py-2.5">{rowInner}</div>
+                          )}
+                        </li>
+                        {on && rule && (
+                          <li className="border-b border-[#EFEDE8] bg-[#F5F4F0] p-3 last:border-0">
+                            <RuleDetail r={rule} me={me} onClose={() => setOpen(null)} />
+                          </li>
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </ul>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+      <p className="text-[12px] text-muted-foreground">Index titles and section references are a starting point for the tax team to confirm. They carry no tax wording or logic; a rule says something only once it is written and validated.</p>
 
       <section id="h-versions" aria-label="Rule versions" className="scroll-mt-6">
         {versions}
@@ -305,14 +402,18 @@ export function RulesLibrary({ rules, versions }: { rules: LibraryRule[]; versio
   );
 }
 
-function RuleDetail({ r, onClose }: { r: LibraryRule; onClose: () => void }) {
+function RuleDetail({ r, me, onClose }: { r: LibraryRule; me: string | null; onClose: () => void }) {
   const returns = (r.logic.returns as Record<string, unknown> | undefined) ?? {};
   const pass = r.tests.filter((t) => t.passed).length;
   return (
     <article className="rounded-2xl bg-card shadow-[0_1px_2px_rgba(16,24,40,.05),0_0_0_1px_rgba(16,24,40,.08)]">
       <header className="flex items-start justify-between gap-4 border-b border-[#EFEDE8] px-5 py-4">
         <div className="min-w-0">
-          <p className="font-mono text-[12px] text-muted-foreground">{r.id}</p>
+          <p className="flex flex-wrap gap-x-3 text-[12px] text-muted-foreground">
+            <span className="font-mono">{r.id}</span>
+            {r.added && <span>Added {dateOf(r.added)}</span>}
+            {r.changed && r.changed !== r.added && <span>Last changed {dateOf(r.changed)}</span>}
+          </p>
           <h3 className={cn("mt-1 text-[18px] font-semibold leading-snug", DISPLAY)}>{r.summary}</h3>
           {pending(r) && <p className="mt-1.5 text-[12.5px] text-[#7A3F06]">Waiting for the tax team to validate it. Until then Kiyos doesn&apos;t use it to answer customers; an expert does.</p>}
         </div>
@@ -398,6 +499,7 @@ function RuleDetail({ r, onClose }: { r: LibraryRule; onClose: () => void }) {
         </div>
       </div>
 
+      <Flags r={r} me={me} />
       <footer className="flex flex-wrap items-center gap-x-6 gap-y-3 border-t border-[#EFEDE8] px-5 py-3.5">
         <div className="flex min-w-0 flex-wrap items-center gap-2 text-[12.5px]">
           <span className="text-muted-foreground">Cited in</span>
@@ -426,5 +528,79 @@ function RuleDetail({ r, onClose }: { r: LibraryRule; onClose: () => void }) {
         {r.yaml && <pre className="mx-5 mb-4 max-h-[360px] overflow-auto rounded-lg bg-[#12161C] p-3.5 text-[11.5px] leading-relaxed text-[#E6E8EB]">{r.yaml}</pre>}
       </details>
     </article>
+  );
+}
+
+const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+/** Flags on a rule: an expert's note that it may be wrong or out of date, for the tax team.
+ * A flag changes nothing in the rule; it shows under Needs attention until resolved. */
+function Flags({ r, me }: { r: LibraryRule; me: string | null }) {
+  const router = useRouter();
+  const [writing, setWriting] = useState(false);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const open = r.flags.filter((f) => !f.resolved_at);
+  const send = async (url: string, body?: unknown) => {
+    setBusy(true);
+    try {
+      const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? "That didn't save");
+      return true;
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "That didn't save");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section aria-label="Flags" className="border-t border-[#EFEDE8] px-5 py-3.5">
+      <div className="flex flex-wrap items-center gap-3">
+        <h4 className="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">
+          <Flag className="h-3.5 w-3.5" aria-hidden /> Flags {open.length ? `· ${open.length} open` : ""}
+        </h4>
+        <span className="flex-1" />
+        {!writing && (
+          <button type="button" onClick={() => setWriting(true)} className="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-card px-3 text-[12.5px] font-semibold hover:border-[#0E3B2C]/40">
+            <Flag className="h-3.5 w-3.5" aria-hidden /> Flag for the tax team
+          </button>
+        )}
+      </div>
+      {open.length === 0 && !writing && <p className="mt-1.5 text-[12.5px] text-muted-foreground">No open flags. Flag a rule if it looks out of date or misses a case; the tax team reviews it.</p>}
+      {open.length > 0 && (
+        <ul className="mt-2 flex flex-col gap-2">
+          {open.map((f) => (
+            <li key={f.id} className="flex items-start gap-3 rounded-xl bg-[#FDEDEB]/60 px-3.5 py-2.5 text-[13px]">
+              <span className="min-w-0 flex-1">
+                <span className="block leading-snug">{f.note}</span>
+                <span className="mt-0.5 block text-[12px] text-muted-foreground">
+                  {f.by} · {dateOf(f.at)}
+                </span>
+              </span>
+              <button type="button" disabled={busy} onClick={async () => (await send(`${API}/rules/flags/${f.id}/resolve${me ? `?by=${encodeURIComponent(me)}` : ""}`)) && (toast.success("Flag resolved"), router.refresh())} className="shrink-0 text-[12.5px] font-semibold text-[#0E3B2C] hover:underline disabled:opacity-50">
+                Resolve
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {writing && (
+        <div className="mt-2">
+          <label htmlFor={`flag-${r.id}`} className="text-[12.5px] font-medium">
+            What looks wrong or out of date?
+          </label>
+          <textarea id={`flag-${r.id}`} autoFocus rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. The Finance Act changed this threshold" className="mt-1.5 w-full resize-y rounded-lg border bg-background px-2.5 py-2 text-[13.5px] outline-none focus:border-[#0E3B2C]" />
+          <div className="mt-2 flex gap-2">
+            <button type="button" disabled={busy || !note.trim()} onClick={async () => (await send(`${API}/rules/${r.id}/flags`, { note, by: me })) && (toast.success("Flagged for the tax team"), setWriting(false), setNote(""), router.refresh())} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[#0E3B2C] px-3 text-[12.5px] font-semibold text-white disabled:opacity-50">
+              {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />} Flag it
+            </button>
+            <button type="button" onClick={() => (setWriting(false), setNote(""))} className="h-8 rounded-lg px-3 text-[12.5px] font-medium text-muted-foreground hover:bg-muted">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }

@@ -227,7 +227,7 @@ function DeskLine({ r, today }: { r: DeskRow; today: string }) {
         </p>
       </div>
       <Link
-        href={`/expert/work?case=${r.case_id}&item=${encodeURIComponent(r.key)}`}
+        href={`/expert/cases?view=triage&case=${r.case_id}&item=${encodeURIComponent(r.key)}`}
         className={cn("inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-3 text-[12.5px] font-medium", r.tier === "late" || r.prepared ? "bg-primary text-primary-foreground" : "border text-foreground hover:bg-muted")}
       >
         Open <ArrowRight className="h-3.5 w-3.5" aria-hidden />

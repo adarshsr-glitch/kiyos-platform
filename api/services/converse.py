@@ -107,6 +107,11 @@ FIXES: dict[str, dict[str, str]] = {
         "why": "“R.N.O.R.” didn't match the approved RNOR rule, so a question the rule answers was handed off.",
         "change": "Before matching, read R.N.O.R. as RNOR (any letters separated by dots).",
     },
+    "idioms_not_personal": {
+        "title": "Don't read figures of speech as personal",
+        "why": "“Explain RNOR like I'm five” uses “I” without saying anything about the asker's own situation, so a general question was treated as personal and not answered.",
+        "change": "Ignore set phrases such as “like I'm five”, “ELI5” and “if I may ask” when deciding whether a question is personal.",
+    },
 }
 
 
@@ -126,6 +131,8 @@ def set_fix(key: str, on: bool) -> dict[str, bool]:
 
 _HINGLISH_RE = re.compile(r"\b(mera|meri|mere|mujhe|mujhko|hamara|hamari|hamare|humara|humari)\b", re.IGNORECASE)
 _DOTTED_RE = re.compile(r"\b((?:[A-Za-z]\.){2,})")
+# Set phrases that contain "I" without describing the asker's situation.
+_IDIOM_RE = re.compile(r"\b(like i'?m (?:five|5|a (?:child|kid|beginner))|eli5|if i may ask|if i understand correctly|i wonder)\b", re.IGNORECASE)
 
 
 def normalise_question(text: str) -> str:
@@ -140,6 +147,8 @@ def classify_free_question(text: str) -> str:
     Deterministic on purpose: the gate must be explainable and auditable.
     "What is RNOR?" is generic; "Am I RNOR?" is personal.
     """
+    if tuning().get("idioms_not_personal"):
+        text = _IDIOM_RE.sub(" ", text)
     # Lower-case "us" is the pronoun; "US" is the country.
     personal = _PERSONAL_RE.search(text) or re.search(r"\bus\b", text)
     if not personal and tuning().get("hinglish_personal"):
